@@ -2,7 +2,7 @@
 title: OrbitGuard AI - Autonomous Mission Control Copilot
 emoji: 🛰️
 colorFrom: blue
-colorTo: cyan
+colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: false
