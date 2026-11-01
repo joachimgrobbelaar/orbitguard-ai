@@ -2,8 +2,11 @@
 
 from contextlib import asynccontextmanager
 import logging
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from orbitguard.api.routers import alerts, conjunctions, maneuvers, satellites, simulation
 from orbitguard.config import settings
@@ -14,6 +17,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("orbitguard")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 
 @asynccontextmanager
@@ -41,15 +47,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
-app.include_router(satellites.router, prefix="/api/v1")
-app.include_router(conjunctions.router, prefix="/api/v1")
-app.include_router(maneuvers.router, prefix="/api/v1")
-app.include_router(alerts.router, prefix="/api/v1")
-app.include_router(simulation.router, prefix="/api/v1")
+# Register routers under /api/v1 and /api/v1/orbitguard alias
+for prefix in ("/api/v1", "/api/v1/orbitguard"):
+    app.include_router(satellites.router, prefix=prefix)
+    app.include_router(conjunctions.router, prefix=prefix)
+    app.include_router(maneuvers.router, prefix=prefix)
+    app.include_router(alerts.router, prefix=prefix)
+    app.include_router(simulation.router, prefix=prefix)
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/v1/health")
+@app.get("/api/v1/orbitguard/health")
 async def health_check():
     """System health and astrodynamics engine telemetry."""
     return {
@@ -68,22 +79,17 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Mission Control overview and quick-start links."""
+    """Serve 3D Mission Control Copilot dashboard or API overview."""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
     return {
         "message": "OrbitGuard AI Mission Control Copilot is active.",
         "docs_url": "/docs",
-        "endpoints": {
-            "health": "/api/v1/health",
-            "satellites": "/api/v1/satellites",
-            "conjunctions": "/api/v1/conjunctions",
-            "screen_horizon": "/api/v1/conjunctions/screen",
-            "maneuvers": "/api/v1/maneuvers",
-            "alerts": "/api/v1/alerts",
-            "simulate_threat": "/api/v1/demo/simulate-threat",
-        },
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("orbitguard.main:app", host=settings.HOST, port=settings.PORT, reload=settings.DEBUG)
+    port = int(os.environ.get("PORT", settings.PORT))
+    uvicorn.run("orbitguard.main:app", host=settings.HOST, port=port, reload=settings.DEBUG)
