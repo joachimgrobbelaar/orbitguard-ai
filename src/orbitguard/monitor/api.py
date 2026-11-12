@@ -12,6 +12,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from orbitguard.nd import MeanElementsNotOsculating
+from orbitguard.monitor.loop import TrackingLoop
 from orbitguard.monitor.service import MonitorService
 from orbitguard.monitor.snapshot import SnapshotUnavailable
 
@@ -23,17 +24,31 @@ def default_cache_dir() -> Path:
 
 
 router = APIRouter(prefix="/api/orbitguard", tags=["orbitguard-monitor"])
+_LAST_ENV_CACHE_DIR: Optional[str] = os.environ.get("ORBITGUARD_CACHE_DIR")
 _SERVICE = MonitorService(cache_dir=default_cache_dir())
 
 
 def get_service() -> MonitorService:
+    global _SERVICE, _LAST_ENV_CACHE_DIR
+    configured = os.environ.get("ORBITGUARD_CACHE_DIR")
+    if configured != _LAST_ENV_CACHE_DIR:
+        _LAST_ENV_CACHE_DIR = configured
+        target = default_cache_dir()
+        _SERVICE = MonitorService(cache_dir=target)
     return _SERVICE
 
 
-def build_test_router(service: MonitorService) -> APIRouter:
+def get_loop() -> TrackingLoop:
+    return get_service().loop
+
+
+def build_test_router(service: MonitorService, loop: Optional[TrackingLoop] = None) -> APIRouter:
     """Point the process-local router at a test service. Tests are single-threaded."""
-    global _SERVICE
+    global _SERVICE, _LAST_ENV_CACHE_DIR
+    if loop is not None:
+        service.loop = loop
     _SERVICE = service
+    _LAST_ENV_CACHE_DIR = os.environ.get("ORBITGUARD_CACHE_DIR")
     return router
 
 
@@ -220,3 +235,23 @@ def screen(body: ScreenBody) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/loop/status")
+def loop_status() -> dict[str, Any]:
+    return get_loop().status(_now())
+
+
+@router.get("/loop/conjunctions")
+def loop_conjunctions() -> dict[str, Any]:
+    return get_loop().conjunctions(_now())
+
+
+@router.get("/loop/objects")
+def loop_objects() -> dict[str, Any]:
+    return get_loop().objects(_now())
+
+
+@router.post("/loop/run-once")
+def loop_run_once() -> dict[str, Any]:
+    return get_loop().run_once(_now())

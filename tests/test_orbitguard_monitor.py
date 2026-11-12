@@ -574,6 +574,51 @@ def test_page_marks_sample_mode_and_does_not_claim_a_live_subscription():
     assert "No snapshot was substituted" in html
 
 
+def test_mobile_ui_webgl_resilience_and_tracking_loop_panel():
+    html = Path("src/orbitguard/static/index.html").read_text(encoding="utf-8")
+    # 1. Mobile viewport, safe-area insets, touch targets >= 44px, collapsible panels
+    assert 'content="width=device-width, initial-scale=1, viewport-fit=cover"' in html
+    assert "env(safe-area-inset-top" in html
+    assert "env(safe-area-inset-bottom" in html
+    assert "min-height: 44px" in html
+    assert "min-width: 44px" in html
+    assert "<details" in html
+    assert "<summary" in html
+    assert "aria-expanded" in html
+
+    # 2. 3D globe mobile support, touch-action on canvas only, DPR cap, WebGL fallback, visibility pause
+    assert "touch-action: none" in html
+    assert "Math.min(window.devicePixelRatio || 1, 2)" in html
+    assert "THREE.TOUCH.ROTATE" in html
+    assert "THREE.TOUCH.DOLLY_PAN" in html
+    assert "orientationchange" in html
+    assert "visualViewport" in html
+    assert "webglcontextlost" in html
+    assert "webglcontextrestored" in html
+    assert 'id="webgl-fallback"' in html
+    assert "visibilitychange" in html
+    assert "document.hidden" in html
+
+    # 3. Tracking loop panel endpoints, badges, screening label, co-located collapsed section, UTC
+    assert "Tracking loop" in html
+    assert "/api/orbitguard/loop/status" in html
+    assert "/api/orbitguard/loop/conjunctions" in html
+    assert "/api/orbitguard/loop/objects" in html
+    assert "/api/orbitguard/loop/run-once" in html
+    assert "SNAPSHOT FALLBACK" in html
+    assert "LIVE" in html
+    assert (
+        "Geometric screening - miss distance from propagated GP states. "
+        "No collision probability. For human review."
+    ) in html
+    assert "No close approaches under " in html
+    assert " km in this horizon." in html
+    assert '<details id="loop-colocated-details" class="sub-details">' in html
+    assert "not connected" in html
+    assert "UTC" in html
+
+
+
 def test_physics_is_imported_not_vendored():
     """Wrappers may delegate. The SGP4, frame, and element implementations may not."""
     banned = (
