@@ -889,6 +889,11 @@
         chip.className = "pwa-status-chip badge-live";
         chipMode.textContent = "LIVE";
         chipAge.textContent = "data age: " + ageText(dataAgeS);
+      } else if (sourceMode === "github_snapshot") {
+        chip.className = "pwa-status-chip badge-fallback";
+        chipMode.textContent = "GITHUB SNAPSHOT";
+        const effectiveAge = snapAgeS != null ? snapAgeS : dataAgeS;
+        chipAge.textContent = "snapshot age: " + ageText(effectiveAge);
       } else if (sourceMode === "snapshot_fallback") {
         chip.className = "pwa-status-chip badge-fallback";
         chipMode.textContent = "SNAPSHOT FALLBACK";
@@ -1348,6 +1353,15 @@
           "Data age: " + ageText(dataAgeS) + ". " +
           (fallbackReason ? "Partial fallback reason: " + fallbackReason + ". " : "") +
           (prov.snapshot_coverage_note ? prov.snapshot_coverage_note : "");
+      } else if (sourceMode === "github_snapshot") {
+        badge.className = "badge badge-fallback";
+        badge.textContent = "GITHUB SNAPSHOT";
+        provBanner.className = "loop-prov-box fallback";
+        provBanner.textContent =
+          "GITHUB SNAPSHOT (" + (prov.source_name || "github_celestrak_snapshot") + ") — committed CelesTrak GP snapshot from GitHub, NOT a live CelesTrak download. " +
+          "Snapshot age: " + ageText(snapAgeS) + " (retrieved at " + formatUtc(retrievedAt, "—") + "). " +
+          (fallbackReason ? "Skipped group(s): " + fallbackReason + ". " : "") +
+          (st.cap_reason ? st.cap_reason + " " : "");
       } else if (sourceMode === "snapshot_fallback") {
         badge.className = "badge badge-fallback";
         badge.textContent = "SNAPSHOT FALLBACK";

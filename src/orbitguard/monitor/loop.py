@@ -18,17 +18,18 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 
-from orbitguard.monitor.ingest import CatalogStore, Transport
+from orbitguard.monitor.ingest import CatalogStore, HeaderTransport, Transport
 from orbitguard.monitor.provenance import age_seconds, as_utc, iso
 from orbitguard.monitor.risk import geometric_screen
 from orbitguard.monitor.sensors import (
     DEFAULT_LOOP_FETCH_TIMEOUT_S,
     SNAPSHOT_ONLY_STATIONS_NOTE,
     CatalogElementSetSource,
+    GitHubSnapshotSource,
     LidarObservationSource,
     NotConnected,
     ObservationBatch,
@@ -36,6 +37,7 @@ from orbitguard.monitor.sensors import (
     VisionObservationSource,
     _deduplicate_by_norad,
     configured_loop_groups,
+    is_github_snapshot_configured,
 )
 from orbitguard.nd import (
     EARTH_MU_KM3_S2,
@@ -68,6 +70,7 @@ DEFAULT_LOOP_COLOCATED_REL_SPEED_KM_S = 0.01
 DEFAULT_LOOP_MIN_CADENCE_S = 10.0
 DEFAULT_LOOP_MAX_CADENCE_S = 3600.0
 DEFAULT_LOOP_KEEP_ITERATIONS = 10
+DEFAULT_LOOP_MAX_OBJECTS = 2000
 LEO_MAX_PERIGEE_ALTITUDE_KM = 2000.0
 
 
@@ -103,6 +106,17 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
     try:
         return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_max_objects(default: int = DEFAULT_LOOP_MAX_OBJECTS) -> int:
+    """Return configured max tracked LEO objects from ``ORBITGUARD_LOOP_MAX_OBJECTS`` (0 = unlimited)."""
+    raw = os.environ.get("ORBITGUARD_LOOP_MAX_OBJECTS")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0, int(raw.strip()))
     except ValueError:
         return default
 
@@ -190,17 +204,61 @@ def _compute_data_and_snapshot_ages(
     """Return ``(snapshot_age_s, data_age_s)`` at ``now_utc``.
 
     For live data, ``snapshot_age_s`` is always ``None`` and ``data_age_s`` is
-    seconds between ``retrieved_at`` and ``now_utc``. For snapshot fallback,
-    ``snapshot_age_s`` is the age of the committed snapshot's retrieval time.
+    seconds between ``retrieved_at`` and ``now_utc``. For snapshots
+    (``github_snapshot`` or ``snapshot_fallback``), ``snapshot_age_s`` and
+    ``data_age_s`` are computed from the committed snapshot's ``retrieved_at``.
     """
     retrieved_dt = _parse_iso(retrieved_at)
     data_age_s = age_seconds(retrieved_dt, now_utc) if retrieved_dt is not None else None
     if source_mode == "live":
         return None, data_age_s
-    if source_mode == "snapshot_fallback":
+    if source_mode in {"snapshot_fallback", "github_snapshot"}:
         snap_age = data_age_s if data_age_s is not None else stored_snapshot_age_s
         return snap_age, data_age_s if data_age_s is not None else stored_snapshot_age_s
     return None, data_age_s
+
+
+def _extract_groups_retrieved(
+    group_prov: Sequence[Mapping[str, Any]],
+    source_mode: Optional[str],
+) -> list[str]:
+    """Return the list of groups that actually returned records in an iteration."""
+    retrieved: list[str] = []
+    for gp in group_prov:
+        grp = gp.get("group")
+        if not grp:
+            continue
+        cnt = int(gp.get("object_count") or 0)
+        gp_mode = gp.get("source_mode")
+        if cnt > 0 and gp_mode in {"live", "github_snapshot"}:
+            retrieved.append(str(grp))
+        elif (
+            cnt > 0
+            and gp_mode == "snapshot_fallback"
+            and gp.get("snapshot_covers_group", grp == "stations")
+        ):
+            retrieved.append(str(grp))
+    if not retrieved and source_mode == "snapshot_fallback":
+        return ["stations"]
+    return retrieved
+
+
+def _classify_data_source_origin(
+    source_mode: Optional[str],
+    catalog_source: Optional[ObservationSource],
+) -> str:
+    """Classify the active data source origin: ``'github'``, ``'celestrak'``, or ``'bundled_fallback'``."""
+    if source_mode == "github_snapshot":
+        return "github"
+    if source_mode == "live":
+        return "celestrak"
+    if source_mode == "snapshot_fallback":
+        return "bundled_fallback"
+    if isinstance(catalog_source, GitHubSnapshotSource):
+        return "github" if catalog_source.configured else "bundled_fallback"
+    if isinstance(catalog_source, CatalogElementSetSource):
+        return "celestrak" if catalog_source.live_fetch_enabled else "bundled_fallback"
+    return "custom"
 
 
 def _evaluate_pair_horizon(
@@ -251,9 +309,15 @@ class TrackingLoop:
         *,
         store: Optional[CatalogStore] = None,
         sources: Optional[Sequence[ObservationSource]] = None,
-        transport: Optional[Transport] = None,
+        transport: Optional[HeaderTransport] = None,
         snapshot_dir: Optional[Path] = None,
         groups: Optional[Sequence[str] | str] = None,
+        max_objects: Optional[int] = None,
+        github_token: Optional[str] = None,
+        github_public: Optional[bool] = None,
+        github_owner: Optional[str] = None,
+        github_repo: Optional[str] = None,
+        github_branch: Optional[str] = None,
         step_s: Optional[float] = None,
         horizon_fraction: float = DEFAULT_LOOP_HORIZON_FRACTION,
         threshold_km: Optional[float] = None,
@@ -271,6 +335,11 @@ class TrackingLoop:
         self.db_path = self.cache_dir / "tracking_loop.sqlite"
         self.store = store or CatalogStore(self.cache_dir / "catalog.json")
         self._groups = groups
+        self.max_objects = (
+            max(0, int(max_objects))
+            if max_objects is not None
+            else _env_max_objects(DEFAULT_LOOP_MAX_OBJECTS)
+        )
 
         self.step_s = (
             max(1.0, float(step_s))
@@ -323,15 +392,32 @@ class TrackingLoop:
 
         if sources is not None:
             self.sources: list[ObservationSource] = list(sources)
-        else:
-            self.catalog_source = CatalogElementSetSource(
-                self.store,
-                groups=groups,
-                timeout_s=fetch_timeout_s,
-                live_fetch=live_fetch,
-                transport=transport,
-                snapshot_dir=snapshot_dir,
+            self.catalog_source: Optional[ObservationSource] = (
+                self.sources[0] if self.sources else None
             )
+        else:
+            if is_github_snapshot_configured(token=github_token, public=github_public):
+                self.catalog_source = GitHubSnapshotSource(
+                    self.store,
+                    groups=groups,
+                    timeout_s=fetch_timeout_s,
+                    token=github_token,
+                    public=github_public,
+                    owner=github_owner,
+                    repo=github_repo,
+                    branch=github_branch,
+                    transport=transport,
+                    snapshot_dir=snapshot_dir,
+                )
+            else:
+                self.catalog_source = CatalogElementSetSource(
+                    self.store,
+                    groups=groups,
+                    timeout_s=fetch_timeout_s,
+                    live_fetch=live_fetch,
+                    transport=transport,
+                    snapshot_dir=snapshot_dir,
+                )
             self.lidar_source = LidarObservationSource()
             self.vision_source = VisionObservationSource()
             self.sources = [
@@ -356,8 +442,8 @@ class TrackingLoop:
 
     @property
     def groups(self) -> list[str]:
-        if hasattr(self, "catalog_source"):
-            return self.catalog_source.groups
+        if getattr(self, "catalog_source", None) is not None and hasattr(self.catalog_source, "groups"):
+            return list(self.catalog_source.groups)  # type: ignore[union-attr]
         return configured_loop_groups(self._groups)
 
     def _connect(self) -> sqlite3.Connection:
@@ -395,6 +481,11 @@ class TrackingLoop:
                     skipped_pair_count INTEGER NOT NULL DEFAULT 0,
                     non_leo_filtered_count INTEGER NOT NULL DEFAULT 0,
                     deduplicated_count INTEGER NOT NULL DEFAULT 0,
+                    objects_capped INTEGER NOT NULL DEFAULT 0,
+                    max_objects INTEGER,
+                    objects_before_cap INTEGER NOT NULL DEFAULT 0,
+                    objects_after_cap INTEGER NOT NULL DEFAULT 0,
+                    cap_reason TEXT,
                     groups_json TEXT,
                     group_provenance_json TEXT,
                     snapshot_coverage_note TEXT
@@ -502,6 +593,11 @@ class TrackingLoop:
                 ("skipped_pair_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("non_leo_filtered_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("deduplicated_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("objects_capped", "INTEGER NOT NULL DEFAULT 0"),
+                ("max_objects", "INTEGER"),
+                ("objects_before_cap", "INTEGER NOT NULL DEFAULT 0"),
+                ("objects_after_cap", "INTEGER NOT NULL DEFAULT 0"),
+                ("cap_reason", "TEXT"),
                 ("groups_json", "TEXT"),
                 ("group_provenance_json", "TEXT"),
                 ("snapshot_coverage_note", "TEXT"),
@@ -717,6 +813,46 @@ class TrackingLoop:
                     item_with_alt["apogee_altitude_km"] = ha_km
                     validated_items.append(item_with_alt)
                     altitude_bands_by_norad[nid] = (hp_km, ha_km)
+
+                # Apply deterministic max-objects cap (if ORBITGUARD_LOOP_MAX_OBJECTS > 0):
+                # Keep all 'stations' objects first, then fill remaining slots by group in the
+                # configured group order, then by NORAD_CAT_ID ascending.
+                objects_before_cap = len(validated_items)
+                objects_capped = False
+                cap_reason: Optional[str] = None
+                max_objects_val: Optional[int] = self.max_objects if self.max_objects > 0 else None
+                if self.max_objects > 0 and objects_before_cap > self.max_objects:
+                    objects_capped = True
+                    configured_grp_order = list(self.groups)
+                    group_rank: dict[str, int] = {"stations": 0}
+                    for idx, grp_name in enumerate(configured_grp_order, start=1):
+                        group_rank.setdefault(grp_name, idx)
+
+                    def _cap_sort_key(item: dict[str, Any]) -> tuple[int, int]:
+                        item_groups = list(item.get("source_groups") or [])
+                        primary_grp = str(item.get("source_group") or "stations")
+                        if primary_grp not in item_groups:
+                            item_groups.append(primary_grp)
+                        best_rank = min(
+                            (group_rank.get(g, len(group_rank) + 1) for g in item_groups),
+                            default=len(group_rank) + 1,
+                        )
+                        return (best_rank, int(item["record"]["NORAD_CAT_ID"]))
+
+                    validated_items = sorted(validated_items, key=_cap_sort_key)[: self.max_objects]
+                    kept_norads = {int(it["record"]["NORAD_CAT_ID"]) for it in validated_items}
+                    altitude_bands_by_norad = {
+                        nid_k: band
+                        for nid_k, band in altitude_bands_by_norad.items()
+                        if nid_k in kept_norads
+                    }
+                    cap_reason = (
+                        f"Capped tracked LEO objects from {objects_before_cap} to "
+                        f"{len(validated_items)} (ORBITGUARD_LOOP_MAX_OBJECTS={self.max_objects}; "
+                        "policy: 'stations' first, then configured group order, then NORAD_CAT_ID ascending)."
+                    )
+                objects_after_cap = len(validated_items)
+                objects_dropped_by_cap = objects_before_cap - objects_after_cap
 
                 # First check which objects can reuse their cached propagation
                 reusable_tracks: dict[int, list[dict[str, Any]]] = {}
@@ -1027,6 +1163,11 @@ class TrackingLoop:
                             skipped_pair_count = ?,
                             non_leo_filtered_count = ?,
                             deduplicated_count = ?,
+                            objects_capped = ?,
+                            max_objects = ?,
+                            objects_before_cap = ?,
+                            objects_after_cap = ?,
+                            cap_reason = ?,
                             groups_json = ?,
                             group_provenance_json = ?,
                             snapshot_coverage_note = ?
@@ -1053,6 +1194,11 @@ class TrackingLoop:
                             skipped_pair_count,
                             non_leo_filtered_count,
                             total_dedup_count,
+                            1 if objects_capped else 0,
+                            max_objects_val,
+                            objects_before_cap,
+                            objects_after_cap,
+                            cap_reason,
                             json.dumps(groups_list),
                             json.dumps(group_prov_list),
                             primary_batch.snapshot_coverage_note,
@@ -1061,12 +1207,48 @@ class TrackingLoop:
                     )
                     self._prune_old_iterations(conn)
 
+                groups_retrieved = _extract_groups_retrieved(group_prov_list, primary_batch.source_mode)
+                active_cat_source = getattr(self, "catalog_source", None)
+                catalog_source_class = (
+                    type(active_cat_source).__name__ if active_cat_source is not None else None
+                )
+                catalog_source_name = (
+                    getattr(active_cat_source, "name", None) if active_cat_source is not None else None
+                )
+                data_origin = _classify_data_source_origin(primary_batch.source_mode, active_cat_source)
+                cap_info = {
+                    "objects_capped": objects_capped,
+                    "max_objects": max_objects_val,
+                    "cap": max_objects_val,
+                    "objects_before_cap": objects_before_cap,
+                    "objects_after_cap": objects_after_cap,
+                    "objects_dropped_by_cap": objects_dropped_by_cap,
+                    "reason": cap_reason,
+                    "policy": "stations first, then configured group order, then NORAD_CAT_ID ascending",
+                }
+                data_source_info = {
+                    "class": catalog_source_class,
+                    "name": primary_batch.source_name or catalog_source_name,
+                    "plugin_name": catalog_source_name,
+                    "origin": data_origin,
+                    "source_mode": primary_batch.source_mode,
+                    "configured": getattr(active_cat_source, "configured", True),
+                    "auth_mode": getattr(active_cat_source, "auth_mode", None),
+                }
+
                 prov_dict = dict(primary_batch.provenance)
                 prov_dict["snapshot_age_s"] = snap_age_s
                 prov_dict["data_age_s"] = data_age_s
                 prov_dict["groups"] = groups_list
+                prov_dict["groups_requested"] = groups_list
+                prov_dict["groups_retrieved"] = groups_retrieved
                 prov_dict["group_provenance"] = group_prov_list
                 prov_dict["deduplicated_count"] = total_dedup_count
+                prov_dict["objects_capped"] = objects_capped
+                prov_dict["max_objects"] = max_objects_val
+                prov_dict["objects_before_cap"] = objects_before_cap
+                prov_dict["objects_after_cap"] = objects_after_cap
+                prov_dict["cap_reason"] = cap_reason
 
                 self.last_error = None
                 return {
@@ -1081,10 +1263,24 @@ class TrackingLoop:
                     "fallback_reason": primary_batch.fallback_reason,
                     "snapshot_age_s": snap_age_s,
                     "data_age_s": data_age_s,
+                    "data_source": data_source_info,
+                    "catalog_source_class": catalog_source_class,
+                    "catalog_source_name": catalog_source_name,
+                    "data_source_origin": data_origin,
                     "groups": groups_list,
+                    "groups_requested": groups_list,
+                    "groups_retrieved": groups_retrieved,
                     "group_provenance": group_prov_list,
                     "snapshot_coverage_note": primary_batch.snapshot_coverage_note,
                     "object_count": len(validated_items),
+                    "objects_capped": objects_capped,
+                    "max_objects": max_objects_val,
+                    "object_cap": max_objects_val,
+                    "objects_before_cap": objects_before_cap,
+                    "objects_after_cap": objects_after_cap,
+                    "objects_dropped_by_cap": objects_dropped_by_cap,
+                    "cap_reason": cap_reason,
+                    "cap": cap_info,
                     "non_leo_filtered_count": non_leo_filtered_count,
                     "deduplicated_count": total_dedup_count,
                     "propagated_count": propagated_count,
@@ -1174,6 +1370,7 @@ class TrackingLoop:
         row: Optional[sqlite3.Row | dict[str, Any]],
         now_utc: datetime,
     ) -> dict[str, Any]:
+        max_objects_val: Optional[int] = self.max_objects if self.max_objects > 0 else None
         if row is None:
             return {
                 "source_mode": None,
@@ -1187,8 +1384,15 @@ class TrackingLoop:
                 "snapshot_age_s": None,
                 "data_age_s": None,
                 "groups": self.groups,
+                "groups_requested": self.groups,
+                "groups_retrieved": [],
                 "group_provenance": [],
                 "deduplicated_count": 0,
+                "objects_capped": False,
+                "max_objects": max_objects_val,
+                "objects_before_cap": 0,
+                "objects_after_cap": 0,
+                "cap_reason": None,
                 "snapshot_coverage_note": None,
             }
 
@@ -1222,8 +1426,11 @@ class TrackingLoop:
             )
             gp_copy["snapshot_age_s"] = g_snap_age
             gp_copy["data_age_s"] = g_data_age
+            if "age_s" in gp_copy:
+                gp_copy["age_s"] = g_snap_age if g_snap_age is not None else g_data_age
             updated_group_prov.append(gp_copy)
 
+        groups_retrieved = _extract_groups_retrieved(updated_group_prov, source_mode)
         non_stations = [g for g in groups_list if g != "stations"]
         coverage_note = r.get("snapshot_coverage_note")
         if coverage_note is None and source_mode == "snapshot_fallback" and non_stations:
@@ -1231,20 +1438,35 @@ class TrackingLoop:
                 f"{SNAPSHOT_ONLY_STATIONS_NOTE} Requested non-stations group(s): {', '.join(non_stations)}."
             )
 
+        obj_cnt = int(r.get("object_count") or 0)
+        objs_before = int(r.get("objects_before_cap") or obj_cnt)
+        objs_after = int(r.get("objects_after_cap") or obj_cnt)
+        iter_max_objs = r.get("max_objects") if r.get("max_objects") is not None else max_objects_val
+
         return {
             "source_mode": source_mode,
             "source_name": r.get("source_name"),
             "source_url": r.get("source_url"),
             "retrieved_at": retrieved_at,
             "live": bool(source_mode == "live"),
-            "snapshot": bool(source_mode == "snapshot_fallback" or any(gp.get("snapshot") for gp in updated_group_prov)),
+            "snapshot": bool(
+                source_mode in {"snapshot_fallback", "github_snapshot"}
+                or any(gp.get("snapshot") for gp in updated_group_prov)
+            ),
             "sensor": False,
             "fallback_reason": r.get("fallback_reason"),
             "snapshot_age_s": snap_age_s,
             "data_age_s": data_age_s,
             "groups": groups_list,
+            "groups_requested": groups_list,
+            "groups_retrieved": groups_retrieved,
             "group_provenance": updated_group_prov,
             "deduplicated_count": int(r.get("deduplicated_count") or 0),
+            "objects_capped": bool(r.get("objects_capped")),
+            "max_objects": iter_max_objs,
+            "objects_before_cap": objs_before,
+            "objects_after_cap": objs_after,
+            "cap_reason": r.get("cap_reason"),
             "snapshot_coverage_note": coverage_note,
         }
 
@@ -1276,6 +1498,7 @@ class TrackingLoop:
         min_horizon_s = last_iter["min_horizon_s"] if last_iter else None
         max_horizon_s = last_iter["max_horizon_s"] if last_iter else None
         shortest_period_s = last_iter["shortest_period_s"] if last_iter else None
+        tracked_object_count = int(last_iter.get("object_count") or 0) if last_iter else 0
         conj_count = int(last_iter.get("conjunction_count") or 0) if last_iter else 0
         coloc_count = int(last_iter.get("co_located_count") or 0) if last_iter else 0
         screened_pairs = int(last_iter.get("screened_pair_count") or 0) if last_iter else 0
@@ -1283,16 +1506,86 @@ class TrackingLoop:
         non_leo_filtered = int(last_iter.get("non_leo_filtered_count") or 0) if last_iter else 0
         dedup_count = int(last_iter.get("deduplicated_count") or 0) if last_iter else 0
 
+        max_objects_val: Optional[int] = (
+            last_iter["max_objects"]
+            if (last_iter and last_iter.get("max_objects") is not None)
+            else (self.max_objects if self.max_objects > 0 else None)
+        )
+        objects_capped = bool(last_iter.get("objects_capped")) if last_iter else False
+        objects_before_cap = (
+            int(last_iter.get("objects_before_cap") or tracked_object_count)
+            if last_iter
+            else 0
+        )
+        objects_after_cap = (
+            int(last_iter.get("objects_after_cap") or tracked_object_count)
+            if last_iter
+            else 0
+        )
+        objects_dropped_by_cap = max(0, objects_before_cap - objects_after_cap)
+        cap_reason = last_iter.get("cap_reason") if last_iter else None
+
+        active_cat_source = getattr(self, "catalog_source", None)
+        catalog_source_class = (
+            type(active_cat_source).__name__ if active_cat_source is not None else None
+        )
+        catalog_source_name = (
+            getattr(active_cat_source, "name", None) if active_cat_source is not None else None
+        )
+        data_origin = _classify_data_source_origin(source_mode, active_cat_source)
+        source_name = last_iter.get("source_name") if last_iter else None
+        source_url = last_iter.get("source_url") if last_iter else None
+        retrieved_at = last_iter.get("retrieved_at") if last_iter else None
+        fallback_reason = last_iter.get("fallback_reason") if last_iter else None
+
         return {
             "running": self.running,
             "enabled": is_loop_enabled(),
             "iteration_count": total_iterations,
+            "iterations": total_iterations,
             "retained_iteration_count": counts["iterations"],
             "keep_iterations": self.keep_iterations,
             "last_iteration_id": last_iter["id"] if last_iter else None,
             "last_started_at": last_iter["started_at"] if last_iter else None,
             "last_finished_at": last_iter["finished_at"] if last_iter else None,
             "last_iteration": last_iter,
+            "data_source": {
+                "class": catalog_source_class,
+                "name": source_name or catalog_source_name,
+                "plugin_name": catalog_source_name,
+                "origin": data_origin,
+                "source_mode": source_mode,
+                "configured": getattr(active_cat_source, "configured", True),
+                "auth_mode": getattr(active_cat_source, "auth_mode", None),
+            },
+            "catalog_source_class": catalog_source_class,
+            "catalog_source_name": catalog_source_name,
+            "data_source_origin": data_origin,
+            "source_mode": source_mode,
+            "source_name": source_name,
+            "source_url": source_url,
+            "retrieved_at": retrieved_at,
+            "fallback_reason": fallback_reason,
+            "snapshot_age_s": snap_age_s,
+            "data_age_s": data_age_s,
+            "object_count": tracked_object_count,
+            "objects_capped": objects_capped,
+            "max_objects": max_objects_val,
+            "object_cap": max_objects_val,
+            "objects_before_cap": objects_before_cap,
+            "objects_after_cap": objects_after_cap,
+            "objects_dropped_by_cap": objects_dropped_by_cap,
+            "cap_reason": cap_reason,
+            "cap": {
+                "objects_capped": objects_capped,
+                "max_objects": max_objects_val,
+                "cap": max_objects_val,
+                "objects_before_cap": objects_before_cap,
+                "objects_after_cap": objects_after_cap,
+                "objects_dropped_by_cap": objects_dropped_by_cap,
+                "reason": cap_reason,
+                "policy": "stations first, then configured group order, then NORAD_CAT_ID ascending",
+            },
             "cadence_s": cadence_s,
             "min_cadence_s": self.min_cadence_s,
             "max_cadence_s": self.max_cadence_s,
@@ -1324,10 +1617,9 @@ class TrackingLoop:
             "non_leo_filtered_count": non_leo_filtered,
             "deduplicated_count": dedup_count,
             "groups": provenance["groups"],
+            "groups_requested": provenance["groups_requested"],
+            "groups_retrieved": provenance["groups_retrieved"],
             "group_provenance": provenance["group_provenance"],
-            "source_mode": source_mode,
-            "snapshot_age_s": snap_age_s,
-            "data_age_s": data_age_s,
             "provenance": provenance,
             "last_error": (last_iter["error"] if (last_iter and last_iter["error"]) else self.last_error),
             "sources": [dict(s.status()) for s in self.sources],

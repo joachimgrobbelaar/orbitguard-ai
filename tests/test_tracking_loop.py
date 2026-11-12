@@ -30,6 +30,7 @@ from orbitguard.monitor.loop import (
     perigee_apogee_altitude_km,
 )
 from orbitguard.monitor.sensors import (
+    DEFAULT_LOOP_GROUPS,
     SNAPSHOT_ONLY_STATIONS_NOTE,
     CatalogElementSetSource,
     LidarObservationSource,
@@ -433,7 +434,7 @@ def test_live_fetch_failure_falls_back_to_snapshot_with_reason_and_age(tmp_path:
     )
     report = loop.run_once(now=now)
 
-    assert len(calls) == 1
+    assert len(calls) == len(DEFAULT_LOOP_GROUPS) == 6
     assert report["status"] == "ok"
     assert report["source_mode"] == "snapshot_fallback"
     assert report["source_name"] == "celestrak_stations_snapshot"

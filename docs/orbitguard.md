@@ -148,36 +148,48 @@ service.
 cycle `retrieve -> store -> propagate -> screen -> repeat`:
 
 1. **Retrieve (`ObservationSource` plug-in interface in `monitor/sensors.py`).**
-   `CatalogElementSetSource` requests the public CelesTrak `stations` OMM
-   JSON batch with a short timeout (`ORBITGUARD_LOOP_FETCH_TIMEOUT_S`,
-   default 8 s). When `ORBITGUARD_LOOP_LIVE_FETCH=0` or when live egress
-   fails, it falls back to the committed `data/gp/stations.json` snapshot
-   via `snapshot.load_stations_snapshot` and labels
-   `source_mode = "snapshot_fallback"` with the failure reason, the
-   snapshot's original `retrieved_at` timestamp, and `snapshot_age_s`.
-   Hardware sensor stubs `LidarObservationSource` (`"lidar"`) and
-   `VisionObservationSource` (`"xvision"`) implement `ObservationSource`
-   with status `"not_connected"` and raise `NotConnected` on `fetch()`,
-   documenting how future range/angle or angles-only astrometric tracklets
-   would have to pass through initial and batch/sequential orbit
-   determination (OD) before entering the loop. They never emit data.
+   - **GitHub Actions CelesTrak GP snapshotter (`scripts/fetch_celestrak_snapshot.py` and `.github/workflows/celestrak-snapshot.yml`):**
+     Because Hugging Face Space egress cannot reach `celestrak.org` (HTTP 504 / timeout), a scheduled GitHub Actions workflow runs every 2 hours (`0 */2 * * *`) to pull the configured CelesTrak GP groups sequentially:
+     `stations`, `active`, `cosmos-1408-debris`, `cosmos-2251-debris`, `fengyun-1c-debris`, `iridium-33-debris`.
+     It enforces CelesTrak's 2-hour minimum refetch rule independently per group via `data/gp/<group>.meta.json` and commits `data/gp/<group>.json` and `<group>.meta.json` to the repository.
+   - **Runtime GitHub snapshot source (`GitHubSnapshotSource`, `"github_gp_snapshot"`):**
+     When `ORBITGUARD_GITHUB_TOKEN` (uses `https://api.github.com/repos/{owner}/{repo}/contents/data/gp/<group>.json?ref={branch}` with `Authorization: Bearer <token>`, decoding base64 `content`) or `ORBITGUARD_GITHUB_PUBLIC=1` (uses `https://raw.githubusercontent.com/{owner}/{repo}/{branch}/data/gp/<group>.json` without auth) is set, `TrackingLoop` selects `GitHubSnapshotSource` and does not attempt live CelesTrak calls. Defaults are `ORBITGUARD_GITHUB_OWNER=joachimgrobbelaar`, `ORBITGUARD_GITHUB_REPO=orbitguard-ai`, `ORBITGUARD_GITHUB_BRANCH=master` (`ORBITGUARD_GITHUB_BRANCH` can point at another branch). The token is never logged or returned in status, provenance, or notes.
+   - **Freshness honesty (`source_mode = "github_snapshot"`):**
+     Data retrieved through `GitHubSnapshotSource` is as fresh as the last successful 2-hour GitHub Actions snapshot job — never presented as a live CelesTrak download (`live = False`, `snapshot = True`, `origin_flag = "snapshot"`). `snapshot_age_s` and `data_age_s` are computed from each group's committed `<group>.meta.json` `retrieved_at` timestamp, not from the runtime GitHub HTTP request time.
+   - **Direct CelesTrak source (`CatalogElementSetSource`) and bundled fallback (`source_mode = "snapshot_fallback"`):**
+     Without `ORBITGUARD_GITHUB_TOKEN` (private repo) or `ORBITGUARD_GITHUB_PUBLIC=1` (public repo), `TrackingLoop` uses `CatalogElementSetSource` and falls back to the bundled `data/gp/stations.json` snapshot when `ORBITGUARD_LOOP_LIVE_FETCH=0` or when live CelesTrak egress fails (`source_mode = "snapshot_fallback"`). Likewise, if `GitHubSnapshotSource` is unconfigured or if every requested group fails on GitHub, it falls back cleanly to the bundled `stations.json` snapshot with an explicit `fallback_reason`.
+   - **Multi-group merge, LEO filter, and max-objects cap (`ORBITGUARD_LOOP_MAX_OBJECTS`):**
+     Configured groups (`ORBITGUARD_LOOP_GROUPS`, default `stations,active,cosmos-1408-debris,cosmos-2251-debris,fengyun-1c-debris,iridium-33-debris`) are merged and de-duplicated by `NORAD_CAT_ID` (retaining the newest `EPOCH`), then filtered to LEO orbits (`perigee_altitude_km < 2000 km`). If the LEO object count exceeds `ORBITGUARD_LOOP_MAX_OBJECTS` (default `2000`; `0` means unlimited), the loop trims deterministically (`stations` objects first, then configured group order, then `NORAD_CAT_ID` ascending) and reports `objects_capped`, `max_objects`, `objects_before_cap`, `objects_after_cap`, and `cap_reason` in `/api/orbitguard/loop/status`.
+   - **Hardware sensor stubs:** `LidarObservationSource` (`"lidar"`) and
+     `VisionObservationSource` (`"xvision"`) implement `ObservationSource`
+     with status `"not_connected"` and raise `NotConnected` on `fetch()`,
+     documenting how future range/angle or angles-only astrometric tracklets
+     would have to pass through initial and batch/sequential orbit
+     determination (OD) before entering the loop. They never emit data.
 2. **Propagate.** Each tracked object is propagated with NanoDynamics SGP4
    (`orbitguard.nd`) over a horizon of `1/8` of its orbital period
    (`1440 / MEAN_MOTION` minutes divided by 8) at a configurable step
-   (default 30 s). The loop cadence is the horizon length of the
-   shortest-period tracked object (`shortest_period / 8`), clamped to
-   configurable bounds. When an object's canonical element-set hash and
-   epoch are unchanged and its previously propagated horizon still covers
-   `now`, re-propagation is skipped.
-3. **Screen.** Pairwise close approaches are screened on the common TEME
-   time grid (`threshold_km`, default 10 km) and labelled
+   (`ORBITGUARD_LOOP_STEP_S`, default 30 s). The loop cadence is the horizon
+   length of the shortest-period tracked object (`shortest_period / 8`),
+   clamped to `[ORBITGUARD_LOOP_MIN_CADENCE_S, ORBITGUARD_LOOP_MAX_CADENCE_S]`
+   (or overridden via `ORBITGUARD_LOOP_CADENCE_S`). When an object's canonical
+   element-set hash and epoch are unchanged and its previously propagated
+   horizon still covers `now`, re-propagation is skipped.
+3. **Screen (`O(overlapping altitude bands)`).** Before pairwise time-grid
+   evaluation, `altitude_bands_overlap` skips pairs whose `[perigee - pad, apogee + pad]`
+   altitude bands do not overlap (`screened_pair_count` vs `skipped_pair_count`),
+   keeping screening `O(objects in overlapping altitude bands)` rather than `O(all²)`.
+   Docked/attached assemblies (`ORBITGUARD_LOOP_COLOCATED_KM`, default 5 km;
+   `ORBITGUARD_LOOP_COLOCATED_REL_SPEED_KM_S`, default 0.01 km/s) are separated
+   under `co_located`. Remaining pairs within `ORBITGUARD_LOOP_THRESHOLD_KM`
+   (default 10 km) are flagged for human review with label
    `"geometric screening - miss distance from propagated GP states, no collision probability, for human review"`.
    No collision probability (`Pc`) is ever computed or output.
-4. **Persist.** Iterations, element sets, propagated states, and
+4. **Persist.** Iterations, element sets, propagated states, co-located pairs, and
    conjunction screenings are stored in `<cache_dir>/tracking_loop.sqlite`
-   (stdlib `sqlite3`), pruning rows beyond the last `N` iterations.
-   The loop starts on FastAPI startup unless `ORBITGUARD_LOOP_ENABLED=0`
-   and exposes `GET /api/orbitguard/loop/status`,
+   (stdlib `sqlite3`), pruning rows beyond the last `ORBITGUARD_LOOP_KEEP_ITERATIONS`
+   (default 10) iterations. The loop starts on FastAPI startup unless
+   `ORBITGUARD_LOOP_ENABLED=0` and exposes `GET /api/orbitguard/loop/status`,
    `GET /api/orbitguard/loop/conjunctions`,
    `GET /api/orbitguard/loop/objects`, and
    `POST /api/orbitguard/loop/run-once`.
