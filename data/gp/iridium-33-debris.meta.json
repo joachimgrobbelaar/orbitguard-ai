@@ -1,0 +1,10 @@
+{
+  "group": "iridium-33-debris",
+  "source_name": "celestrak_iridium_33_debris_snapshot",
+  "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-33-debris&FORMAT=JSON",
+  "retrieved_at": "2026-11-12T20:13:56.002715Z",
+  "retrieved_by": "github-actions",
+  "object_count": 109,
+  "live_download": false,
+  "note": "Snapshot of one CelesTrak iridium-33-debris-group download. OrbitGuard did not contact CelesTrak when it displays this file. The retrieval time is when this job saved the response."
+}

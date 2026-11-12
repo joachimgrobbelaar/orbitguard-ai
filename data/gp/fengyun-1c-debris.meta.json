@@ -1,0 +1,10 @@
+{
+  "group": "fengyun-1c-debris",
+  "source_name": "celestrak_fengyun_1c_debris_snapshot",
+  "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=fengyun-1c-debris&FORMAT=JSON",
+  "retrieved_at": "2026-11-12T20:13:56.002715Z",
+  "retrieved_by": "github-actions",
+  "object_count": 1987,
+  "live_download": false,
+  "note": "Snapshot of one CelesTrak fengyun-1c-debris-group download. OrbitGuard did not contact CelesTrak when it displays this file. The retrieval time is when this job saved the response."
+}
