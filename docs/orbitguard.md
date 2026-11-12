@@ -158,8 +158,8 @@ cycle `retrieve -> store -> propagate -> screen -> repeat`:
      Data retrieved through `GitHubSnapshotSource` is as fresh as the last successful 2-hour GitHub Actions snapshot job — never presented as a live CelesTrak download (`live = False`, `snapshot = True`, `origin_flag = "snapshot"`). `snapshot_age_s` and `data_age_s` are computed from each group's committed `<group>.meta.json` `retrieved_at` timestamp, not from the runtime GitHub HTTP request time.
    - **Direct CelesTrak source (`CatalogElementSetSource`) and bundled fallback (`source_mode = "snapshot_fallback"`):**
      Without `ORBITGUARD_GITHUB_TOKEN` (private repo) or `ORBITGUARD_GITHUB_PUBLIC=1` (public repo), `TrackingLoop` uses `CatalogElementSetSource` and falls back to the bundled `data/gp/stations.json` snapshot when `ORBITGUARD_LOOP_LIVE_FETCH=0` or when live CelesTrak egress fails (`source_mode = "snapshot_fallback"`). Likewise, if `GitHubSnapshotSource` is unconfigured or if every requested group fails on GitHub, it falls back cleanly to the bundled `stations.json` snapshot with an explicit `fallback_reason`.
-   - **Multi-group merge, LEO filter, and max-objects cap (`ORBITGUARD_LOOP_MAX_OBJECTS`):**
-     Configured groups (`ORBITGUARD_LOOP_GROUPS`, default `stations,active,cosmos-1408-debris,cosmos-2251-debris,fengyun-1c-debris,iridium-33-debris`) are merged and de-duplicated by `NORAD_CAT_ID` (retaining the newest `EPOCH`), then filtered to LEO orbits (`perigee_altitude_km < 2000 km`). If the LEO object count exceeds `ORBITGUARD_LOOP_MAX_OBJECTS` (default `2000`; `0` means unlimited), the loop trims deterministically (`stations` objects first, then configured group order, then `NORAD_CAT_ID` ascending) and reports `objects_capped`, `max_objects`, `objects_before_cap`, `objects_after_cap`, and `cap_reason` in `/api/orbitguard/loop/status`.
+   - **Multi-group merge, LEO filter, and debris-preserving max-objects cap (`ORBITGUARD_LOOP_MAX_OBJECTS`):**
+     Configured groups (`ORBITGUARD_LOOP_GROUPS`, default `stations,active,cosmos-1408-debris,cosmos-2251-debris,fengyun-1c-debris,iridium-33-debris`) are merged and de-duplicated by `NORAD_CAT_ID` (retaining the newest `EPOCH`), then filtered to LEO orbits (`perigee_altitude_km < 2000 km`). If the LEO object count exceeds `ORBITGUARD_LOOP_MAX_OBJECTS` (default `3000`; `0` means unlimited), the loop trims deterministically using a debris-preserving priority policy — keeping all `stations` objects first (tier 0), then all named debris groups (`cosmos-1408-debris`, `cosmos-2251-debris`, `fengyun-1c-debris`, `iridium-33-debris`, and any `*-debris` group, tier 1), then any other non-`active` groups (tier 2), and finally filling remaining slots from `active` (tier 3) sorted by `NORAD_CAT_ID` ascending so `active` never starves `stations` or the debris clouds — and reports `objects_capped`, `max_objects`, `objects_before_cap`, `objects_after_cap`, and `cap_reason` in `/api/orbitguard/loop/status`.
    - **Hardware sensor stubs:** `LidarObservationSource` (`"lidar"`) and
      `VisionObservationSource` (`"xvision"`) implement `ObservationSource`
      with status `"not_connected"` and raise `NotConnected` on `fetch()`,
@@ -175,16 +175,17 @@ cycle `retrieve -> store -> propagate -> screen -> repeat`:
    (or overridden via `ORBITGUARD_LOOP_CADENCE_S`). When an object's canonical
    element-set hash and epoch are unchanged and its previously propagated
    horizon still covers `now`, re-propagation is skipped.
-3. **Screen (`O(overlapping altitude bands)`).** Before pairwise time-grid
-   evaluation, `altitude_bands_overlap` skips pairs whose `[perigee - pad, apogee + pad]`
-   altitude bands do not overlap (`screened_pair_count` vs `skipped_pair_count`),
-   keeping screening `O(objects in overlapping altitude bands)` rather than `O(all²)`.
-   Docked/attached assemblies (`ORBITGUARD_LOOP_COLOCATED_KM`, default 5 km;
-   `ORBITGUARD_LOOP_COLOCATED_REL_SPEED_KM_S`, default 0.01 km/s) are separated
-   under `co_located`. Remaining pairs within `ORBITGUARD_LOOP_THRESHOLD_KM`
-   (default 10 km) are flagged for human review with label
-   `"geometric screening - miss distance from propagated GP states, no collision probability, for human review"`.
-   No collision probability (`Pc`) is ever computed or output.
+3. **Two-layer broad-phase pre-filter (`src/orbitguard/monitor/broadphase.py`) and exact geometric screen.**
+   - **Layer 1 — Apogee/perigee (radial-overlap) sieve (`altitude_bands_overlap` / `count_radial_skipped_pairs`):**
+     Eliminates pairs whose `[perigee - pad, apogee + pad]` altitude bands (`pad = max(threshold_km, colocated_km)`) do not overlap in `O(n log n)` via sorted interval bounds (`radial_skipped_pair_count`).
+   - **Layer 2 — 3D spatial hashing per time step with 27-neighborhood lookup (`screen_tracks_broadphase`):**
+     At each shared propagation time step, bins every object's TEME position into a uniform 3D grid with cell size `ORBITGUARD_LOOP_GRID_KM` (defaulting to `ORBITGUARD_LOOP_THRESHOLD_KM = 10.0` km, and clamped up to `>= ORBITGUARD_LOOP_THRESHOLD_KM` if configured smaller) using `cell_index = floor(position / cell_size)` along each axis. Only radial-surviving pairs that fall in the same cell or one of the 26 adjacent cells (`3x3x3` 27-neighborhood across faces, edges, and corners) at one or more time steps receive vectorized exact Euclidean miss-distance and relative-speed evaluation (`screened_pair_count`). Radial-surviving pairs that are never 27-neighbors at any step are eliminated (`spatial_skipped_pair_count`).
+   - **Pair count accounting:** `/api/orbitguard/loop/status` and `/api/orbitguard/loop/conjunctions` report `total_pair_count = n*(n-1)/2 = screened_pair_count + skipped_pair_count`, where `skipped_pair_count = radial_skipped_pair_count + spatial_skipped_pair_count`, along with `grid_km`.
+   - **Co-located (docked / attached) classification:** A pair is classified under `co_located` if and only if it was present in the 27-neighborhood at **every** shared sample across the horizon (`neighbor_steps == shared_steps`) **and** its measured `max_miss_km <= ORBITGUARD_LOOP_COLOCATED_KM` (default 5 km) and `max_relative_speed_km_s <= ORBITGUARD_LOOP_COLOCATED_REL_SPEED_KM_S` (default 0.01 km/s). If a pair is missing from the 27-neighborhood at any shared step, its separation at that step exceeds `cell_size >= threshold_km >= colocated_km`, so it cannot be co-located.
+   - Remaining pairs within `ORBITGUARD_LOOP_THRESHOLD_KM`
+     (default 10 km) are flagged for human review with label
+     `"geometric screening - miss distance from propagated GP states, no collision probability, for human review"`.
+     No collision probability (`Pc`) is ever computed or output.
 4. **Persist.** Iterations, element sets, propagated states, co-located pairs, and
    conjunction screenings are stored in `<cache_dir>/tracking_loop.sqlite`
    (stdlib `sqlite3`), pruning rows beyond the last `ORBITGUARD_LOOP_KEEP_ITERATIONS`

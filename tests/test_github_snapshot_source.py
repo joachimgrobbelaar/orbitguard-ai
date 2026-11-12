@@ -86,7 +86,7 @@ def test_default_loop_groups_and_max_objects_constants(monkeypatch: pytest.Monke
     ]
     assert list(DEFAULT_LOOP_GROUPS) == expected_groups
     assert configured_loop_groups() == expected_groups
-    assert DEFAULT_LOOP_MAX_OBJECTS == 2000
+    assert DEFAULT_LOOP_MAX_OBJECTS == 3000
 
 
 def test_github_snapshot_source_token_path_contents_api_and_secret_redaction(
@@ -261,7 +261,8 @@ def test_github_snapshot_source_unconfigured_makes_no_http_calls_and_falls_back(
         calls.append(url)
         raise AssertionError("Network must not be called when GitHubSnapshotSource is unconfigured")
 
-    now = datetime(2026, 11, 12, 16, 23, 31, 784639, tzinfo=timezone.utc)
+    snap_dt = datetime.fromisoformat(STATIONS_META["retrieved_at"].replace("Z", "+00:00"))
+    now = snap_dt + timedelta(hours=1)
     store = CatalogStore(tmp_path / "catalog.json")
     source = GitHubSnapshotSource(store, transport=forbidden_transport)
     assert source.configured is False
@@ -275,7 +276,7 @@ def test_github_snapshot_source_unconfigured_makes_no_http_calls_and_falls_back(
     assert batch.snapshot is True
     assert GITHUB_UNCONFIGURED_REASON in (batch.fallback_reason or "")
     assert len(batch.records) == 19
-    assert batch.retrieved_at == "2026-11-12T15:23:31.784639Z"
+    assert batch.retrieved_at == STATIONS_META["retrieved_at"]
     assert batch.snapshot_age_s == pytest.approx(3600.0)
     assert batch.data_age_s == pytest.approx(3600.0)
 
@@ -292,7 +293,8 @@ def test_github_snapshot_source_total_failure_falls_back_to_bundled_snapshot(
             return HttpResult(status=504, body=f"timeout with {secret}".encode("utf-8"), url=url)
         return HttpResult(status=401, body=b"Bad credentials", url=url)
 
-    now = datetime(2026, 11, 12, 17, 23, 31, 784639, tzinfo=timezone.utc)
+    snap_dt = datetime.fromisoformat(STATIONS_META["retrieved_at"].replace("Z", "+00:00"))
+    now = snap_dt + timedelta(hours=2)
     store = CatalogStore(tmp_path / "catalog.json")
     source = GitHubSnapshotSource(store, transport=failing_transport)
     batch = source.fetch(now=now)
@@ -303,7 +305,7 @@ def test_github_snapshot_source_total_failure_falls_back_to_bundled_snapshot(
     assert len(batch.records) == 19
     assert "HTTP 504" in (batch.fallback_reason or "")
     assert "HTTP 401" in (batch.fallback_reason or "")
-    assert batch.retrieved_at == "2026-11-12T15:23:31.784639Z"
+    assert batch.retrieved_at == STATIONS_META["retrieved_at"]
     assert batch.snapshot_age_s == pytest.approx(7200.0)
     assert batch.data_age_s == pytest.approx(7200.0)
     assert secret not in json.dumps(batch.to_dict())

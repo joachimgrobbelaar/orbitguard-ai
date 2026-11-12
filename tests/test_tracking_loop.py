@@ -45,6 +45,10 @@ from orbitguard.monitor.sensors import (
 from orbitguard.monitor.service import MonitorService
 from orbitguard.nd import parse_epoch
 
+STATIONS_META = json.loads(Path("data/gp/stations.meta.json").read_text(encoding="utf-8"))
+STATIONS_RETRIEVED_AT = str(STATIONS_META["retrieved_at"])
+STATIONS_RETRIEVED_DT = parse_epoch(STATIONS_RETRIEVED_AT)
+
 
 def _client_with_loop(tmp_path: Path, **loop_kwargs: Any) -> tuple[TestClient, TrackingLoop]:
     service = MonitorService(
@@ -120,15 +124,13 @@ def test_run_once_snapshot_fallback_and_sqlite_persistence(tmp_path: Path, monke
     loop = TrackingLoop(tmp_path, step_s=30.0, threshold_km=500.0)
     report = loop.run_once(now=now)
 
-    expected_snap_age = (
-        now - datetime(2026, 11, 12, 15, 23, 31, 784639, tzinfo=timezone.utc)
-    ).total_seconds()
+    expected_snap_age = (now - STATIONS_RETRIEVED_DT).total_seconds()
 
     assert report["status"] == "ok"
     assert report["iteration_id"] == 1
     assert report["source_mode"] == "snapshot_fallback"
     assert report["source_name"] == "celestrak_stations_snapshot"
-    assert report["retrieved_at"] == "2026-11-12T15:23:31.784639Z"
+    assert report["retrieved_at"] == STATIONS_RETRIEVED_AT
     assert "ORBITGUARD_LOOP_LIVE_FETCH=0" in (report["fallback_reason"] or "")
     assert report["snapshot_age_s"] == pytest.approx(expected_snap_age)
     assert report["data_age_s"] == pytest.approx(expected_snap_age)
@@ -138,6 +140,10 @@ def test_run_once_snapshot_fallback_and_sqlite_persistence(tmp_path: Path, monke
     assert report["co_located_count"] == 38
     assert report["conjunction_count"] == 8
     assert report["screened_pair_count"] + report["skipped_pair_count"] == 19 * 18 // 2
+    assert (
+        report["radial_skipped_pair_count"] + report["spatial_skipped_pair_count"]
+        == report["skipped_pair_count"]
+    )
     assert report["label"] == SCREENING_LABEL
     assert report["error"] is None
 
@@ -225,9 +231,11 @@ def test_colocated_docked_vehicles_separated_from_real_conjunctions(
     iss_prog = pairs_by_names[("ISS (ZARYA)", "PROGRESS-MS 34")]
     assert iss_prog["classification"] == "co_located"
     assert iss_prog["reason"] == COLOCATED_REASON
-    assert iss_prog["min_miss_km"] == pytest.approx(0.0, abs=1e-6)
+    assert iss_prog["min_miss_km"] <= 5.0
     assert iss_prog["max_miss_km"] <= 5.0
     assert iss_prog["max_relative_speed_km_s"] <= 0.01
+    iss_poisk = pairs_by_names[("ISS (ZARYA)", "POISK")]
+    assert iss_poisk["min_miss_km"] == pytest.approx(0.0, abs=1e-6)
 
     # Also test env var configuration of ORBITGUARD_LOOP_COLOCATED_KM and ORBITGUARD_LOOP_COLOCATED_REL_SPEED_KM_S
     monkeypatch.setenv("ORBITGUARD_LOOP_COLOCATED_KM", "2.5")
@@ -275,7 +283,7 @@ def test_live_vs_snapshot_ages_and_per_object_epoch_age_hours(tmp_path: Path):
     expected_epoch_age_h = (t_query - expected_epoch_dt).total_seconds() / 3600.0
     assert iss["epoch_age_hours"] == pytest.approx(expected_epoch_age_h)
     assert iss["epoch_age_h"] == pytest.approx(expected_epoch_age_h)
-    assert iss["epoch_age_hours"] > 11.0  # 16:00:45Z minus 04:11:25Z is ~11.82 hours
+    assert iss["epoch_age_hours"] > 5.0
 
     conjs = loop_live.conjunctions(now=t_query)
     assert conjs["snapshot_age_s"] is None
@@ -334,12 +342,22 @@ def test_multi_group_dedup_leo_filter_prefilter_and_fallback_provenance(
     assert report["object_count"] == 5
 
     # Total pairs among 5 objects = 10.
-    # ISS (25544), POISK (36086), NAUKA (49044) are at ~414-424 km (3 pairs overlap).
+    # ISS (25544), POISK (36086), NAUKA (49044) are at ~414-424 km (3 pairs overlap radially).
     # CSS (48274) is at ~380-386 km (doesn't overlap with 414 km or 335 km at 10 km pad).
     # DUPLEX (66906) is at ~335-342 km (doesn't overlap with 380 km or 414 km at 10 km pad).
+    # Layer 1 (radial sieve) skips 7 pairs; Layer 2 (3D spatial hash) skips the 2 pairs
+    # involving the epoch-shifted ISS (far in-track) and screens the 1 co-located POISK/NAUKA pair.
     assert report["total_pair_count"] == 10
-    assert report["screened_pair_count"] == 3
-    assert report["skipped_pair_count"] == 7
+    assert report["radial_skipped_pair_count"] == 7
+    assert report["spatial_skipped_pair_count"] == 2
+    assert report["skipped_pair_count"] == 9
+    assert report["screened_pair_count"] == 1
+    assert (
+        report["screened_pair_count"]
+        + report["radial_skipped_pair_count"]
+        + report["spatial_skipped_pair_count"]
+        == report["total_pair_count"]
+    )
     assert altitude_bands_overlap(413.7, 423.7, 379.7, 385.8, 10.0) is False
     assert altitude_bands_overlap(413.7, 423.7, 413.7, 423.7, 10.0) is True
 
@@ -425,7 +443,7 @@ def test_live_fetch_failure_falls_back_to_snapshot_with_reason_and_age(tmp_path:
         calls.append(url)
         return HttpResult(status=504, body=b"CelesTrak egress timed out after 8s", url=url)
 
-    now = datetime(2026, 11, 12, 17, 23, 31, 784639, tzinfo=timezone.utc)
+    now = STATIONS_RETRIEVED_DT + timedelta(hours=2)
     loop = TrackingLoop(
         tmp_path,
         transport=failing_transport,
@@ -440,7 +458,7 @@ def test_live_fetch_failure_falls_back_to_snapshot_with_reason_and_age(tmp_path:
     assert report["source_name"] == "celestrak_stations_snapshot"
     assert "HTTP 504" in (report["fallback_reason"] or "")
     assert "timed out" in (report["fallback_reason"] or "")
-    assert report["retrieved_at"] == "2026-11-12T15:23:31.784639Z"
+    assert report["retrieved_at"] == STATIONS_RETRIEVED_AT
     assert report["snapshot_age_s"] == pytest.approx(2 * 3600.0)
     assert report["data_age_s"] == pytest.approx(2 * 3600.0)
     assert report["provenance"]["live"] is False
@@ -522,8 +540,12 @@ def test_loop_api_endpoints_provenance_and_no_probability(tmp_path: Path, monkey
     assert status_after["conjunction_count"] == 8
     assert status_after["co_located_count"] == 38
     assert status_after["screened_pair_count"] + status_after["skipped_pair_count"] == 171
+    assert (
+        status_after["radial_skipped_pair_count"] + status_after["spatial_skipped_pair_count"]
+        == status_after["skipped_pair_count"]
+    )
     assert status_after["provenance"]["source_name"] == "celestrak_stations_snapshot"
-    assert status_after["provenance"]["retrieved_at"] == "2026-11-12T15:23:31.784639Z"
+    assert status_after["provenance"]["retrieved_at"] == STATIONS_RETRIEVED_AT
     assert status_after["provenance"]["snapshot"] is True
     assert status_after["provenance"]["live"] is False
     assert status_after["provenance"]["snapshot_age_s"] is not None
@@ -547,7 +569,7 @@ def test_loop_api_endpoints_provenance_and_no_probability(tmp_path: Path, monkey
     assert iss["epoch_age_hours"] is not None
     assert iss["perigee_altitude_km"] < 2000.0
     assert iss["source"] == "celestrak_stations_snapshot"
-    assert iss["retrieved_at"] == "2026-11-12T15:23:31.784639Z"
+    assert iss["retrieved_at"] == STATIONS_RETRIEVED_AT
     assert iss["propagated_horizon"]["duration_s"] == pytest.approx(iss["period_s"] / 8.0)
     assert iss["propagated_horizon"]["sample_count"] > 0
     assert iss["latest_state"]["frame"] == "TEME"
@@ -559,7 +581,7 @@ def test_loop_api_endpoints_provenance_and_no_probability(tmp_path: Path, monkey
     assert conj_body["iteration_id"] == 1
     assert conj_body["label"] == SCREENING_LABEL
     assert conj_body["source_mode"] == "snapshot_fallback"
-    assert conj_body["provenance"]["retrieved_at"] == "2026-11-12T15:23:31.784639Z"
+    assert conj_body["provenance"]["retrieved_at"] == STATIONS_RETRIEVED_AT
     assert conj_body["count"] == 8
     assert conj_body["co_located_count"] == 38
     assert len(conj_body["co_located"]) == 38

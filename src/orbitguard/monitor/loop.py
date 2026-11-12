@@ -22,6 +22,12 @@ from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 
+from orbitguard.monitor.broadphase import (
+    altitude_bands_overlap,
+    count_radial_skipped_pairs,
+    resolve_grid_km,
+    screen_tracks_broadphase,
+)
 from orbitguard.monitor.ingest import CatalogStore, HeaderTransport, Transport
 from orbitguard.monitor.provenance import age_seconds, as_utc, iso
 from orbitguard.monitor.risk import geometric_screen
@@ -65,13 +71,27 @@ COLOCATED_REASON = (
 DEFAULT_LOOP_STEP_S = 30.0
 DEFAULT_LOOP_HORIZON_FRACTION = 1.0 / 8.0
 DEFAULT_LOOP_THRESHOLD_KM = 10.0
+DEFAULT_LOOP_GRID_KM = DEFAULT_LOOP_THRESHOLD_KM
 DEFAULT_LOOP_COLOCATED_KM = 5.0
 DEFAULT_LOOP_COLOCATED_REL_SPEED_KM_S = 0.01
 DEFAULT_LOOP_MIN_CADENCE_S = 10.0
 DEFAULT_LOOP_MAX_CADENCE_S = 3600.0
 DEFAULT_LOOP_KEEP_ITERATIONS = 10
-DEFAULT_LOOP_MAX_OBJECTS = 2000
+DEFAULT_LOOP_MAX_OBJECTS = 3000
 LEO_MAX_PERIGEE_ALTITUDE_KM = 2000.0
+
+PRIORITY_DEBRIS_GROUPS: tuple[str, ...] = (
+    "cosmos-1408-debris",
+    "cosmos-2251-debris",
+    "fengyun-1c-debris",
+    "iridium-33-debris",
+)
+
+CAP_POLICY_DESCRIPTION = (
+    "stations first, then named debris groups (cosmos-1408-debris, cosmos-2251-debris, "
+    "fengyun-1c-debris, iridium-33-debris), then remaining groups (active last), "
+    "then NORAD_CAT_ID ascending"
+)
 
 
 def is_loop_enabled() -> bool:
@@ -182,16 +202,54 @@ def is_leo_orbit(
     return hp_km < max_perigee_km
 
 
-def altitude_bands_overlap(
-    perigee_a_km: float,
-    apogee_a_km: float,
-    perigee_b_km: float,
-    apogee_b_km: float,
-    threshold_km: float,
-) -> bool:
-    """Return True when two [perigee, apogee] altitude bands padded by ``threshold_km`` overlap."""
-    pad = max(0.0, float(threshold_km))
-    return (perigee_a_km - pad) <= (apogee_b_km + pad) and (perigee_b_km - pad) <= (apogee_a_km + pad)
+def _group_cap_priority(
+    group_name: str,
+    configured_groups: Sequence[str],
+) -> tuple[int, int]:
+    """Return ``(tier, sub_rank)`` so ``stations`` and named debris groups are never starved by ``active``."""
+    g = str(group_name or "stations").strip()
+    if g == "stations":
+        return (0, 0)
+    cfg_index = (
+        configured_groups.index(g)
+        if g in configured_groups
+        else len(configured_groups)
+    )
+    if g in PRIORITY_DEBRIS_GROUPS or g.endswith("-debris"):
+        debris_sub = (
+            PRIORITY_DEBRIS_GROUPS.index(g)
+            if g in PRIORITY_DEBRIS_GROUPS
+            else len(PRIORITY_DEBRIS_GROUPS) + cfg_index
+        )
+        return (1, cfg_index if g in configured_groups else debris_sub)
+    if g == "active":
+        return (3, cfg_index)
+    return (2, cfg_index)
+
+
+def cap_sort_key(
+    item: Mapping[str, Any],
+    configured_groups: Sequence[str],
+) -> tuple[int, int, int]:
+    """Deterministic sort key for ``ORBITGUARD_LOOP_MAX_OBJECTS`` capping.
+
+    Priority tiers:
+    1. ``stations`` (tier 0)
+    2. Named debris groups (``cosmos-1408-debris``, ``cosmos-2251-debris``,
+       ``fengyun-1c-debris``, ``iridium-33-debris``, and any ``*-debris`` group)
+    3. Any other non-``active`` groups in configured order
+    4. ``active`` last (so ``active`` never starves ``stations`` or debris clouds)
+    Within the same group priority, sorts by ``NORAD_CAT_ID`` ascending.
+    """
+    item_groups = [str(g) for g in (item.get("source_groups") or []) if g]
+    primary_grp = str(item.get("source_group") or "stations")
+    if primary_grp not in item_groups:
+        item_groups.append(primary_grp)
+    best_tier, best_sub = min(
+        (_group_cap_priority(g, configured_groups) for g in item_groups),
+        default=(3, 0),
+    )
+    return (best_tier, best_sub, int(item["record"]["NORAD_CAT_ID"]))
 
 
 def _compute_data_and_snapshot_ages(
@@ -321,6 +379,7 @@ class TrackingLoop:
         step_s: Optional[float] = None,
         horizon_fraction: float = DEFAULT_LOOP_HORIZON_FRACTION,
         threshold_km: Optional[float] = None,
+        grid_km: Optional[float] = None,
         colocated_km: Optional[float] = None,
         colocated_rel_speed_km_s: Optional[float] = None,
         min_cadence_s: Optional[float] = None,
@@ -352,6 +411,12 @@ class TrackingLoop:
             if threshold_km is not None
             else _env_float("ORBITGUARD_LOOP_THRESHOLD_KM", DEFAULT_LOOP_THRESHOLD_KM, minimum=0.0)
         )
+        raw_grid_km = (
+            float(grid_km)
+            if grid_km is not None
+            else _env_optional_float("ORBITGUARD_LOOP_GRID_KM")
+        )
+        self.grid_km = resolve_grid_km(raw_grid_km, self.threshold_km)
         self.colocated_km = (
             max(0.0, float(colocated_km))
             if colocated_km is not None
@@ -479,6 +544,9 @@ class TrackingLoop:
                     co_located_count INTEGER NOT NULL DEFAULT 0,
                     screened_pair_count INTEGER NOT NULL DEFAULT 0,
                     skipped_pair_count INTEGER NOT NULL DEFAULT 0,
+                    radial_skipped_pair_count INTEGER NOT NULL DEFAULT 0,
+                    spatial_skipped_pair_count INTEGER NOT NULL DEFAULT 0,
+                    grid_km REAL,
                     non_leo_filtered_count INTEGER NOT NULL DEFAULT 0,
                     deduplicated_count INTEGER NOT NULL DEFAULT 0,
                     objects_capped INTEGER NOT NULL DEFAULT 0,
@@ -591,6 +659,9 @@ class TrackingLoop:
                 ("co_located_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("screened_pair_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("skipped_pair_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("radial_skipped_pair_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("spatial_skipped_pair_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("grid_km", "REAL"),
                 ("non_leo_filtered_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("deduplicated_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("objects_capped", "INTEGER NOT NULL DEFAULT 0"),
@@ -815,8 +886,9 @@ class TrackingLoop:
                     altitude_bands_by_norad[nid] = (hp_km, ha_km)
 
                 # Apply deterministic max-objects cap (if ORBITGUARD_LOOP_MAX_OBJECTS > 0):
-                # Keep all 'stations' objects first, then fill remaining slots by group in the
-                # configured group order, then by NORAD_CAT_ID ascending.
+                # Keep all 'stations' objects first, then named debris groups
+                # (cosmos-1408-debris, cosmos-2251-debris, fengyun-1c-debris, iridium-33-debris),
+                # then remaining groups (active last), then by NORAD_CAT_ID ascending.
                 objects_before_cap = len(validated_items)
                 objects_capped = False
                 cap_reason: Optional[str] = None
@@ -824,22 +896,10 @@ class TrackingLoop:
                 if self.max_objects > 0 and objects_before_cap > self.max_objects:
                     objects_capped = True
                     configured_grp_order = list(self.groups)
-                    group_rank: dict[str, int] = {"stations": 0}
-                    for idx, grp_name in enumerate(configured_grp_order, start=1):
-                        group_rank.setdefault(grp_name, idx)
-
-                    def _cap_sort_key(item: dict[str, Any]) -> tuple[int, int]:
-                        item_groups = list(item.get("source_groups") or [])
-                        primary_grp = str(item.get("source_group") or "stations")
-                        if primary_grp not in item_groups:
-                            item_groups.append(primary_grp)
-                        best_rank = min(
-                            (group_rank.get(g, len(group_rank) + 1) for g in item_groups),
-                            default=len(group_rank) + 1,
-                        )
-                        return (best_rank, int(item["record"]["NORAD_CAT_ID"]))
-
-                    validated_items = sorted(validated_items, key=_cap_sort_key)[: self.max_objects]
+                    validated_items = sorted(
+                        validated_items,
+                        key=lambda item: cap_sort_key(item, configured_grp_order),
+                    )[: self.max_objects]
                     kept_norads = {int(it["record"]["NORAD_CAT_ID"]) for it in validated_items}
                     altitude_bands_by_norad = {
                         nid_k: band
@@ -849,7 +909,7 @@ class TrackingLoop:
                     cap_reason = (
                         f"Capped tracked LEO objects from {objects_before_cap} to "
                         f"{len(validated_items)} (ORBITGUARD_LOOP_MAX_OBJECTS={self.max_objects}; "
-                        "policy: 'stations' first, then configured group order, then NORAD_CAT_ID ascending)."
+                        f"policy: {CAP_POLICY_DESCRIPTION})."
                     )
                 objects_after_cap = len(validated_items)
                 objects_dropped_by_cap = objects_before_cap - objects_after_cap
@@ -999,88 +1059,65 @@ class TrackingLoop:
                 cadence_s = self._clamp_cadence(raw_cadence)
                 self._current_cadence_s = cadence_s
 
-                # Pairwise geometric close-approach screening over the common time grid
-                # with apogee/perigee overlap prefilter and co-located classification.
-                sorted_ids = sorted(tracks_by_norad.keys())
-                conjunction_rows: list[tuple[Any, ...]] = []
-                colocated_rows: list[tuple[Any, ...]] = []
-                screened_pair_count = 0
-                skipped_pair_count = 0
-                prefilter_pad_km = max(self.threshold_km, self.colocated_km)
+                # Two-layer broad-phase (apogee/perigee radial sieve + 3D spatial hash
+                # across the 27-neighborhood) followed by exact Euclidean screening for survivors.
+                bp_result = screen_tracks_broadphase(
+                    tracks_by_norad,
+                    altitude_bands_by_norad=altitude_bands_by_norad,
+                    names_by_norad=names_by_norad,
+                    threshold_km=self.threshold_km,
+                    colocated_km=self.colocated_km,
+                    colocated_rel_speed_km_s=self.colocated_rel_speed_km_s,
+                    grid_km=self.grid_km,
+                    frame=GP_REFERENCE_FRAME,
+                    screening_label=SCREENING_LABEL,
+                    colocated_reason=COLOCATED_REASON,
+                )
+                screened_pair_count = bp_result.screened_pair_count
+                radial_skipped_pair_count = bp_result.radial_skipped_pair_count
+                spatial_skipped_pair_count = bp_result.spatial_skipped_pair_count
+                skipped_pair_count = bp_result.skipped_pair_count
+                total_pair_count = bp_result.total_pair_count
+                effective_grid_km = bp_result.grid_km
 
-                for idx_a in range(len(sorted_ids)):
-                    id_a = sorted_ids[idx_a]
-                    track_a = tracks_by_norad[id_a]
-                    hp_a, ha_a = altitude_bands_by_norad[id_a]
-                    for idx_b in range(idx_a + 1, len(sorted_ids)):
-                        id_b = sorted_ids[idx_b]
-                        hp_b, ha_b = altitude_bands_by_norad[id_b]
-                        if not altitude_bands_overlap(hp_a, ha_a, hp_b, ha_b, prefilter_pad_km):
-                            skipped_pair_count += 1
-                            continue
-
-                        screened_pair_count += 1
-                        track_b = tracks_by_norad[id_b]
-                        screen_res = _evaluate_pair_horizon(
-                            track_a,
-                            track_b,
-                            frame=GP_REFERENCE_FRAME,
-                            threshold_km=self.threshold_km,
-                        )
-                        miss_km = screen_res.get("geometric_miss_km")
-                        max_miss_km = screen_res.get("max_miss_km")
-                        tca = screen_res.get("time_of_closest_sample")
-                        rel_speed = screen_res.get("relative_speed_km_s")
-                        max_rel_speed = screen_res.get("max_relative_speed_km_s")
-
-                        if miss_km is None or tca is None or max_miss_km is None or max_rel_speed is None:
-                            continue
-
-                        pair_key = f"{id_a}-{id_b}"
-                        is_colocated = (
-                            self.colocated_km > 0.0
-                            and self.colocated_rel_speed_km_s > 0.0
-                            and float(max_miss_km) <= self.colocated_km
-                            and float(max_rel_speed) <= self.colocated_rel_speed_km_s
-                        )
-                        if is_colocated:
-                            colocated_rows.append(
-                                (
-                                    iteration_id,
-                                    pair_key,
-                                    id_a,
-                                    names_by_norad[id_a],
-                                    id_b,
-                                    names_by_norad[id_b],
-                                    str(tca),
-                                    float(miss_km),
-                                    float(max_miss_km),
-                                    None if rel_speed is None else float(rel_speed),
-                                    float(max_rel_speed),
-                                    float(self.colocated_km),
-                                    float(self.colocated_rel_speed_km_s),
-                                    GP_REFERENCE_FRAME,
-                                    COLOCATED_REASON,
-                                    SCREENING_LABEL,
-                                )
-                            )
-                        elif screen_res.get("within_display_threshold"):
-                            conjunction_rows.append(
-                                (
-                                    iteration_id,
-                                    pair_key,
-                                    id_a,
-                                    names_by_norad[id_a],
-                                    id_b,
-                                    names_by_norad[id_b],
-                                    str(tca),
-                                    float(miss_km),
-                                    None if rel_speed is None else float(rel_speed),
-                                    float(self.threshold_km),
-                                    GP_REFERENCE_FRAME,
-                                    SCREENING_LABEL,
-                                )
-                            )
+                conjunction_rows: list[tuple[Any, ...]] = [
+                    (
+                        iteration_id,
+                        c["pair"],
+                        int(c["primary_norad_id"]),
+                        str(c["primary_name"]),
+                        int(c["secondary_norad_id"]),
+                        str(c["secondary_name"]),
+                        str(c["tca"]),
+                        float(c["min_miss_km"]),
+                        None if c["relative_speed_km_s"] is None else float(c["relative_speed_km_s"]),
+                        float(c["threshold_km"]),
+                        str(c["frame"]),
+                        str(c["label"]),
+                    )
+                    for c in bp_result.conjunctions
+                ]
+                colocated_rows: list[tuple[Any, ...]] = [
+                    (
+                        iteration_id,
+                        c["pair"],
+                        int(c["primary_norad_id"]),
+                        str(c["primary_name"]),
+                        int(c["secondary_norad_id"]),
+                        str(c["secondary_name"]),
+                        str(c["tca"]),
+                        float(c["min_miss_km"]),
+                        float(c["max_miss_km"]),
+                        None if c["relative_speed_km_s"] is None else float(c["relative_speed_km_s"]),
+                        float(c["max_relative_speed_km_s"]),
+                        float(c["colocated_km"]),
+                        float(c["colocated_rel_speed_km_s"]),
+                        str(c["frame"]),
+                        str(c["reason"]),
+                        str(c["label"]),
+                    )
+                    for c in bp_result.co_located
+                ]
 
                 finished_dt = datetime.now(timezone.utc)
                 if finished_dt < now_utc:
@@ -1161,6 +1198,9 @@ class TrackingLoop:
                             co_located_count = ?,
                             screened_pair_count = ?,
                             skipped_pair_count = ?,
+                            radial_skipped_pair_count = ?,
+                            spatial_skipped_pair_count = ?,
+                            grid_km = ?,
                             non_leo_filtered_count = ?,
                             deduplicated_count = ?,
                             objects_capped = ?,
@@ -1192,6 +1232,9 @@ class TrackingLoop:
                             len(colocated_rows),
                             screened_pair_count,
                             skipped_pair_count,
+                            radial_skipped_pair_count,
+                            spatial_skipped_pair_count,
+                            effective_grid_km,
                             non_leo_filtered_count,
                             total_dedup_count,
                             1 if objects_capped else 0,
@@ -1224,7 +1267,7 @@ class TrackingLoop:
                     "objects_after_cap": objects_after_cap,
                     "objects_dropped_by_cap": objects_dropped_by_cap,
                     "reason": cap_reason,
-                    "policy": "stations first, then configured group order, then NORAD_CAT_ID ascending",
+                    "policy": CAP_POLICY_DESCRIPTION,
                 }
                 data_source_info = {
                     "class": catalog_source_class,
@@ -1249,6 +1292,12 @@ class TrackingLoop:
                 prov_dict["objects_before_cap"] = objects_before_cap
                 prov_dict["objects_after_cap"] = objects_after_cap
                 prov_dict["cap_reason"] = cap_reason
+                prov_dict["screened_pair_count"] = screened_pair_count
+                prov_dict["radial_skipped_pair_count"] = radial_skipped_pair_count
+                prov_dict["spatial_skipped_pair_count"] = spatial_skipped_pair_count
+                prov_dict["skipped_pair_count"] = skipped_pair_count
+                prov_dict["total_pair_count"] = total_pair_count
+                prov_dict["grid_km"] = effective_grid_km
 
                 self.last_error = None
                 return {
@@ -1286,8 +1335,10 @@ class TrackingLoop:
                     "propagated_count": propagated_count,
                     "reused_count": reused_count,
                     "screened_pair_count": screened_pair_count,
+                    "radial_skipped_pair_count": radial_skipped_pair_count,
+                    "spatial_skipped_pair_count": spatial_skipped_pair_count,
                     "skipped_pair_count": skipped_pair_count,
-                    "total_pair_count": screened_pair_count + skipped_pair_count,
+                    "total_pair_count": total_pair_count,
                     "conjunction_count": len(conjunction_rows),
                     "co_located_count": len(colocated_rows),
                     "cadence_s": cadence_s,
@@ -1296,6 +1347,7 @@ class TrackingLoop:
                     "max_horizon_s": max_horizon_s,
                     "step_s": self.step_s,
                     "threshold_km": self.threshold_km,
+                    "grid_km": effective_grid_km,
                     "colocated_km": self.colocated_km,
                     "colocated_rel_speed_km_s": self.colocated_rel_speed_km_s,
                     "label": SCREENING_LABEL,
@@ -1328,9 +1380,13 @@ class TrackingLoop:
                     "propagated_count": 0,
                     "reused_count": 0,
                     "screened_pair_count": 0,
+                    "radial_skipped_pair_count": 0,
+                    "spatial_skipped_pair_count": 0,
                     "skipped_pair_count": 0,
+                    "total_pair_count": 0,
                     "conjunction_count": 0,
                     "co_located_count": 0,
+                    "grid_km": self.grid_km,
                     "cadence_s": self._current_cadence_s,
                     "label": SCREENING_LABEL,
                     "error": err_msg,
@@ -1393,6 +1449,12 @@ class TrackingLoop:
                 "objects_before_cap": 0,
                 "objects_after_cap": 0,
                 "cap_reason": None,
+                "screened_pair_count": 0,
+                "radial_skipped_pair_count": 0,
+                "spatial_skipped_pair_count": 0,
+                "skipped_pair_count": 0,
+                "total_pair_count": 0,
+                "grid_km": self.grid_km,
                 "snapshot_coverage_note": None,
             }
 
@@ -1442,6 +1504,11 @@ class TrackingLoop:
         objs_before = int(r.get("objects_before_cap") or obj_cnt)
         objs_after = int(r.get("objects_after_cap") or obj_cnt)
         iter_max_objs = r.get("max_objects") if r.get("max_objects") is not None else max_objects_val
+        screened_pairs = int(r.get("screened_pair_count") or 0)
+        skipped_pairs = int(r.get("skipped_pair_count") or 0)
+        radial_skipped_pairs = int(r.get("radial_skipped_pair_count") or 0)
+        spatial_skipped_pairs = int(r.get("spatial_skipped_pair_count") or 0)
+        iter_grid_km = float(r["grid_km"]) if r.get("grid_km") is not None else self.grid_km
 
         return {
             "source_mode": source_mode,
@@ -1467,6 +1534,12 @@ class TrackingLoop:
             "objects_before_cap": objs_before,
             "objects_after_cap": objs_after,
             "cap_reason": r.get("cap_reason"),
+            "screened_pair_count": screened_pairs,
+            "radial_skipped_pair_count": radial_skipped_pairs,
+            "spatial_skipped_pair_count": spatial_skipped_pairs,
+            "skipped_pair_count": skipped_pairs,
+            "total_pair_count": screened_pairs + skipped_pairs,
+            "grid_km": iter_grid_km,
             "snapshot_coverage_note": coverage_note,
         }
 
@@ -1503,6 +1576,17 @@ class TrackingLoop:
         coloc_count = int(last_iter.get("co_located_count") or 0) if last_iter else 0
         screened_pairs = int(last_iter.get("screened_pair_count") or 0) if last_iter else 0
         skipped_pairs = int(last_iter.get("skipped_pair_count") or 0) if last_iter else 0
+        radial_skipped_pairs = (
+            int(last_iter.get("radial_skipped_pair_count") or 0) if last_iter else 0
+        )
+        spatial_skipped_pairs = (
+            int(last_iter.get("spatial_skipped_pair_count") or 0) if last_iter else 0
+        )
+        grid_km_val = (
+            float(last_iter["grid_km"])
+            if (last_iter and last_iter.get("grid_km") is not None)
+            else self.grid_km
+        )
         non_leo_filtered = int(last_iter.get("non_leo_filtered_count") or 0) if last_iter else 0
         dedup_count = int(last_iter.get("deduplicated_count") or 0) if last_iter else 0
 
@@ -1584,7 +1668,7 @@ class TrackingLoop:
                 "objects_after_cap": objects_after_cap,
                 "objects_dropped_by_cap": objects_dropped_by_cap,
                 "reason": cap_reason,
-                "policy": "stations first, then configured group order, then NORAD_CAT_ID ascending",
+                "policy": CAP_POLICY_DESCRIPTION,
             },
             "cadence_s": cadence_s,
             "min_cadence_s": self.min_cadence_s,
@@ -1607,11 +1691,14 @@ class TrackingLoop:
                 "formula": "1/8 of each object's orbital period (period = 1440 / MEAN_MOTION minutes)",
             },
             "threshold_km": self.threshold_km,
+            "grid_km": grid_km_val,
             "colocated_km": self.colocated_km,
             "colocated_rel_speed_km_s": self.colocated_rel_speed_km_s,
             "conjunction_count": conj_count,
             "co_located_count": coloc_count,
             "screened_pair_count": screened_pairs,
+            "radial_skipped_pair_count": radial_skipped_pairs,
+            "spatial_skipped_pair_count": spatial_skipped_pairs,
             "skipped_pair_count": skipped_pairs,
             "total_pair_count": screened_pairs + skipped_pairs,
             "non_leo_filtered_count": non_leo_filtered,
@@ -1643,6 +1730,7 @@ class TrackingLoop:
                     "label": SCREENING_LABEL,
                     "screening_kind": "geometric_screening",
                     "threshold_km": self.threshold_km,
+                    "grid_km": self.grid_km,
                     "colocated_km": self.colocated_km,
                     "colocated_rel_speed_km_s": self.colocated_rel_speed_km_s,
                     "source_mode": None,
@@ -1650,6 +1738,8 @@ class TrackingLoop:
                     "data_age_s": None,
                     "provenance": empty_prov,
                     "screened_pair_count": 0,
+                    "radial_skipped_pair_count": 0,
+                    "spatial_skipped_pair_count": 0,
                     "skipped_pair_count": 0,
                     "total_pair_count": 0,
                     "count": 0,
@@ -1678,14 +1768,22 @@ class TrackingLoop:
                 (iter_id,),
             ).fetchall()
 
-        source_mode = last_row["source_mode"]
-        retrieved_at = last_row["retrieved_at"]
-        provenance = self._build_iteration_provenance(last_row, now_utc)
-        provenance["evaluated_at"] = last_row["finished_at"]
+        last_iter_dict = dict(last_row)
+        source_mode = last_iter_dict["source_mode"]
+        retrieved_at = last_iter_dict["retrieved_at"]
+        provenance = self._build_iteration_provenance(last_iter_dict, now_utc)
+        provenance["evaluated_at"] = last_iter_dict["finished_at"]
         snap_age_s = provenance["snapshot_age_s"]
         data_age_s = provenance["data_age_s"]
-        screened_pairs = int(last_row["screened_pair_count"] or 0)
-        skipped_pairs = int(last_row["skipped_pair_count"] or 0)
+        screened_pairs = int(last_iter_dict.get("screened_pair_count") or 0)
+        skipped_pairs = int(last_iter_dict.get("skipped_pair_count") or 0)
+        radial_skipped_pairs = int(last_iter_dict.get("radial_skipped_pair_count") or 0)
+        spatial_skipped_pairs = int(last_iter_dict.get("spatial_skipped_pair_count") or 0)
+        grid_km_val = (
+            float(last_iter_dict["grid_km"])
+            if last_iter_dict.get("grid_km") is not None
+            else self.grid_km
+        )
 
         conjunction_items = [
             {
@@ -1755,6 +1853,7 @@ class TrackingLoop:
             "label": SCREENING_LABEL,
             "screening_kind": "geometric_screening",
             "threshold_km": self.threshold_km,
+            "grid_km": grid_km_val,
             "colocated_km": self.colocated_km,
             "colocated_rel_speed_km_s": self.colocated_rel_speed_km_s,
             "source_mode": source_mode,
@@ -1762,6 +1861,8 @@ class TrackingLoop:
             "data_age_s": data_age_s,
             "provenance": provenance,
             "screened_pair_count": screened_pairs,
+            "radial_skipped_pair_count": radial_skipped_pairs,
+            "spatial_skipped_pair_count": spatial_skipped_pairs,
             "skipped_pair_count": skipped_pairs,
             "total_pair_count": screened_pairs + skipped_pairs,
             "count": len(conjunction_items),
