@@ -1,3 +1,8 @@
-"""OrbitGuard AI — Autonomous Conjunction & Maneuver Recommendation Agent."""
+"""OrbitGuard — human-reviewed LEO monitoring.
 
-__version__ = "1.0.0"
+Catalog ingest, provenance, geometric screening, and the operator UI live
+here. Shared orbital calculations are imported from the NanoDynamics
+package. See ``orbitguard.nd`` for the pinned dependency.
+"""
+
+__version__ = "0.2.0"

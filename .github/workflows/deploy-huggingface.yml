@@ -1,0 +1,40 @@
+name: Publish Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # A stations-snapshot commit must not rebuild or upload the Space.
+      - "data/gp/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read Space id
+        id: space
+        run: |
+          id=$(grep -v '^[[:space:]]*#' deploy/hf_space_id | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          if [ -z "$id" ] || [[ "$id" != */* ]] || [[ "$id" == OWNER/* ]]; then
+            echo "Set deploy/hf_space_id to owner/name (this repo publishes Marnu25/orbitguard-ai)."
+            exit 1
+          fi
+
+      - name: Upload Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ steps.space.outputs.id }}
+        run: |
+          python -m pip install --quiet huggingface_hub
+          python scripts/publish_space.py

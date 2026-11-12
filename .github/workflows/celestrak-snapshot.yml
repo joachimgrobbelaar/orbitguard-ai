@@ -1,0 +1,34 @@
+name: CelesTrak stations snapshot
+
+# CelesTrak asks clients not to download a GP group more often than every
+# two hours. This job is scheduled at that interval and the script refuses
+# a second download while the saved snapshot is younger than two hours.
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download the stations group once
+        run: python scripts/fetch_celestrak_snapshot.py
+
+      - name: Commit the snapshot when it changed
+        run: |
+          git diff --quiet -- data/gp && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/gp/stations.json data/gp/stations.meta.json
+          git commit -m "Refresh the CelesTrak stations snapshot"
+          git push

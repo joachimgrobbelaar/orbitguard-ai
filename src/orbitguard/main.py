@@ -1,16 +1,22 @@
-"""OrbitGuard AI — Main FastAPI Application Entrypoint."""
+"""OrbitGuard FastAPI entrypoint.
 
-from contextlib import asynccontextmanager
+Serves the monitoring API and the mission-control page. It does not compute
+a collision probability, recommend a maneuver, or command a spacecraft.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
-from orbitguard.api.routers import alerts, conjunctions, maneuvers, satellites, simulation
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+
+from orbitguard import __version__
 from orbitguard.config import settings
-from orbitguard.db.session import init_db
+from orbitguard.monitor.api import router as monitor_router
+from orbitguard.nd import api_status
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,78 +24,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger("orbitguard")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application startup and shutdown lifecycle management."""
-    logger.info("Initializing OrbitGuard AI Database and Ephemeris Engine...")
-    await init_db()
-    logger.info("OrbitGuard AI Core Engine online on port %d", settings.PORT)
-    yield
-    logger.info("OrbitGuard AI shutting down.")
-
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+INDEX_PATH = STATIC_DIR / "index.html"
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Autonomous Orbital Conjunction Screening & Maneuver Recommendation Copilot for CubeSats & Small Satellites.",
-    lifespan=lifespan,
+    description=(
+        "Human-reviewed LEO monitoring. Public GP states, NOAA indices, and "
+        "geometric miss distance. Collision probability is not computed."
+    ),
 )
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Register routers under /api/v1 and /api/v1/orbitguard alias
-for prefix in ("/api/v1", "/api/v1/orbitguard"):
-    app.include_router(satellites.router, prefix=prefix)
-    app.include_router(conjunctions.router, prefix=prefix)
-    app.include_router(maneuvers.router, prefix=prefix)
-    app.include_router(alerts.router, prefix=prefix)
-    app.include_router(simulation.router, prefix=prefix)
-
-if os.path.exists(STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.include_router(monitor_router)
 
 
+@app.get("/health")
 @app.get("/api/v1/health")
-@app.get("/api/v1/orbitguard/health")
-async def health_check():
-    """System health and astrodynamics engine telemetry."""
+@app.get("/api/orbitguard/health")
+def health() -> dict:
+    """Process health. Propagation availability is reported, not invented."""
+    nano = api_status()
     return {
         "status": "healthy",
-        "service": "OrbitGuard AI",
-        "version": settings.VERSION,
-        "astrodynamics_engine": {
-            "integrator": "Runge-Kutta 4(5) Cowell",
-            "perturbations": ["J2 Earth Oblateness", "Exponential Atmospheric Drag"],
-            "screening_horizon_hours": settings.SCREENING_WINDOW_HOURS,
-            "conjunction_trigger_km": settings.CONJUNCTION_THRESHOLD_KM,
-            "maneuver_solver": "VNC Phasing & Out-of-Plane Tsiolkovsky Engine",
-        },
+        "service": "OrbitGuard",
+        "version": __version__,
+        "role": "Human-reviewed LEO monitoring. This service does not command a spacecraft.",
+        "collision_probability": "not_computable",
+        "expected_collision_count": "not_implemented",
+        "nanodynamics": nano,
     }
 
 
 @app.get("/")
-async def root():
-    """Serve 3D Mission Control Copilot dashboard or API overview."""
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {
-        "message": "OrbitGuard AI Mission Control Copilot is active.",
-        "docs_url": "/docs",
-    }
+def root():
+    if INDEX_PATH.is_file():
+        return FileResponse(INDEX_PATH)
+    return {"message": "OrbitGuard monitoring API is active.", "docs_url": "/docs"}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", settings.PORT))
     uvicorn.run("orbitguard.main:app", host=settings.HOST, port=port, reload=settings.DEBUG)

@@ -1,11 +1,10 @@
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 pydantic>=2.5.0
-pydantic-settings>=2.1.0
 numpy>=1.24.0
-scipy>=1.10.0
-sqlalchemy>=2.0.0
-aiosqlite>=0.19.0
-greenlet>=3.0.0
 httpx>=0.25.0
 python-dotenv>=1.0.0
+
+# NanoDynamics 1.1.0 public orbital API. Same line as orbitguard.nd.REQUIREMENT.
+# Do not copy SGP4, frames, element parsing, constants, or the propagator.
+nanodynamics @ git+https://github.com/joachimgrobbelaar/NanoDynamics@d22c000a304e4484ce58461afde31981647483bf
