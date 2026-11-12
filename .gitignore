@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 .env
 src/orbitguard/monitor/.cache/
+.venv/
+agy-live.log
+logview.py

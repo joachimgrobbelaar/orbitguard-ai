@@ -7,6 +7,7 @@ does not log in.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import time
@@ -29,6 +30,7 @@ from nanodynamics.elements import RecordRejected, validate_omm
 from orbitguard.monitor.provenance import iso
 
 Transport = Callable[[str], "HttpResult"]
+HeaderTransport = Callable[..., "HttpResult"]
 
 
 @dataclass
@@ -78,6 +80,70 @@ def invoke_transport(transport: Transport, url: str) -> HttpResult:
     except urllib.error.URLError as exc:
         return HttpResult(status=504, body=_failure_body(exc), url=url)
     except TimeoutError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
+
+
+def default_header_transport(
+    url: str,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout_s: float = CELESTRAK_TIMEOUT_S,
+) -> HttpResult:
+    """GET ``url`` with custom ``headers`` (e.g. GitHub API ``Authorization`` and ``Accept``).
+
+    Network failures become HTTP 504 with the reason as the body.
+    """
+    req_headers: dict[str, str] = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if headers:
+        req_headers.update({str(k): str(v) for k, v in headers.items()})
+    request = urllib.request.Request(url, headers=req_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            return HttpResult(status=int(response.status), body=response.read(), url=response.geturl())
+    except urllib.error.HTTPError as exc:
+        payload = exc.read() if exc.fp is not None else b""
+        return HttpResult(status=int(exc.code), body=payload, url=url)
+    except urllib.error.URLError as exc:
+        return HttpResult(status=504, body=_failure_body(exc), url=url)
+    except TimeoutError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
+    except OSError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
+
+
+def invoke_header_transport(
+    transport: HeaderTransport,
+    url: str,
+    headers: Optional[Mapping[str, str]] = None,
+) -> HttpResult:
+    """Call ``transport`` with ``(url, headers)`` when supported, or ``(url,)`` for 1-arg transports."""
+    hdrs: dict[str, str] = dict(headers) if headers else {}
+    try:
+        sig = inspect.signature(transport)
+        params = list(sig.parameters.values())
+        positional = [
+            p
+            for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+        has_headers_kw = (
+            "headers" in sig.parameters
+            and sig.parameters["headers"].kind == inspect.Parameter.KEYWORD_ONLY
+        )
+        if len(positional) >= 2 or has_varargs:
+            return transport(url, hdrs)
+        if has_headers_kw or has_kwargs:
+            return transport(url, headers=hdrs)
+        return transport(url)
+    except urllib.error.HTTPError as exc:
+        payload = exc.read() if exc.fp is not None else b""
+        return HttpResult(status=int(exc.code), body=payload, url=url)
+    except urllib.error.URLError as exc:
+        return HttpResult(status=504, body=_failure_body(exc), url=url)
+    except TimeoutError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
+    except OSError as exc:
         return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
 
 

@@ -50,6 +50,7 @@ from orbitguard.monitor.roadmap import roadmap
 from orbitguard.monitor.samples import SAMPLE_SOURCE, sample_records
 from orbitguard.monitor.sensors import sensor_catalog
 from orbitguard.monitor.snapshot import describe_stations_snapshot, load_stations_snapshot
+from orbitguard.monitor.loop import TrackingLoop
 
 MODES = ("awaiting", "simulation_sample", "public_gp", "gp_snapshot")
 
@@ -61,6 +62,11 @@ class MonitorService:
         self.store = CatalogStore(self.cache_dir / "catalog.json")
         self.environment_path = self.cache_dir / "environment.json"
         self.transport = transport
+        self.loop = TrackingLoop(
+            self.cache_dir,
+            store=self.store,
+            transport=transport if transport is not default_transport else None,
+        )
 
     def status(self, now: Optional[datetime] = None) -> dict[str, Any]:
         now = as_utc(now) or datetime.now(timezone.utc)

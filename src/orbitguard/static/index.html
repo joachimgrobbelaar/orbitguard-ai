@@ -2,7 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#030712">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="OrbitGuard">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <title>OrbitGuard — LEO monitoring</title>
   <style>
     :root {
@@ -19,98 +28,567 @@
       --sample: #e9d5ff;
       --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Consolas, monospace;
       --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      -webkit-text-size-adjust: 100%;
+    }
     body {
       background: var(--bg);
       color: var(--text);
       font: 15px/1.45 var(--sans);
       min-height: 100vh;
+      min-height: 100dvh;
+      touch-action: pan-y pinch-zoom;
     }
     a { color: var(--cyan); }
     :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
     .skip {
-      position: absolute; left: 8px; top: -40px; background: var(--amber); color: #1a1400;
-      padding: 6px 10px; z-index: 5;
+      position: absolute; left: 8px; top: -60px; background: var(--amber); color: #1a1400;
+      padding: 10px 14px; min-height: 44px; min-width: 44px; z-index: 20;
+      display: inline-flex; align-items: center; border-radius: 6px; font-weight: 600;
     }
-    .skip:focus { top: 8px; }
-    header, main { width: min(1440px, 100%); margin: 0 auto; padding: 12px 16px; }
+    .skip:focus { top: max(8px, var(--safe-top)); }
+    header, main {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding-left: max(16px, calc(12px + var(--safe-left)));
+      padding-right: max(16px, calc(12px + var(--safe-right)));
+    }
     header {
+      padding-top: max(12px, var(--safe-top));
+      padding-bottom: 12px;
       display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
       border-bottom: 1px solid var(--line);
     }
+    main {
+      padding-top: 12px;
+      padding-bottom: max(24px, calc(16px + var(--safe-bottom)));
+    }
     nav { display: flex; flex-wrap: wrap; gap: 8px 14px; min-width: 0; }
-    nav a { color: var(--text); text-decoration: none; }
-    .brand { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    nav a {
+      color: var(--text); text-decoration: none;
+      min-height: 44px; min-width: 44px; padding: 8px 12px;
+      display: inline-flex; align-items: center;
+      border: 1px solid var(--line); border-radius: 8px; background: rgba(15, 23, 42, 0.7);
+    }
+    .brand { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 240px; }
     .brand strong {
       font-family: var(--mono); letter-spacing: 0.08em; color: var(--cyan); font-size: 14px;
     }
-    .brand span { color: var(--muted); font-size: 13px; }
-    h1 { font-size: 26px; line-height: 1.2; margin: 8px 0; }
+    .brand span { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+    h1 { font-size: 24px; line-height: 1.25; margin: 8px 0 12px; overflow-wrap: anywhere; }
+    h3 { font-size: 15px; margin: 10px 0 6px; overflow-wrap: anywhere; }
     .banner, .panel {
       border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-      min-width: 0;
+      min-width: 0; max-width: 100%;
     }
     .banner { padding: 12px 14px; margin-bottom: 12px; }
     .banner.sample { border-color: #c084fc; }
     .banner.snapshot { border-color: #fbbf24; }
     .banner.public { border-color: #34d399; }
     .banner.awaiting { border-color: #fbbf24; }
-    .banner p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+    .banner p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; }
     .hud { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .metric {
       background: rgba(15, 23, 42, 0.8); border: 1px solid var(--line); border-radius: 8px;
       padding: 8px 10px; min-width: 0; flex: 1 1 140px;
     }
-    .metric .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-    .metric .v { font-family: var(--mono); font-size: 16px; margin-top: 2px; overflow-wrap: anywhere; }
+    .metric .k {
+      font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+      text-transform: uppercase; color: var(--muted); overflow-wrap: anywhere;
+    }
+    .metric .v {
+      font-family: var(--mono); font-size: 15px; margin-top: 2px;
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     button, select {
-      font: inherit; color: var(--text); background: #10233f; border: 1px solid var(--line);
-      border-radius: 8px; padding: 8px 12px; cursor: pointer; max-width: 100%;
+      font: inherit; font-size: 14px; color: var(--text); background: #10233f; border: 1px solid var(--line);
+      border-radius: 8px; padding: 10px 14px; min-height: 44px; min-width: 44px;
+      cursor: pointer; max-width: 100%;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     }
+    select { display: block; width: 100%; }
     button.primary { background: var(--cyan); color: #042028; border-color: transparent; font-weight: 700; }
-    button[aria-selected="true"] { border-color: var(--cyan); }
+    button[aria-selected="true"], button[aria-pressed="true"] { border-color: var(--cyan); box-shadow: inset 0 0 0 1px var(--cyan); }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .workspace {
       display: grid;
-      grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 340px);
+      grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 360px);
       gap: 12px; align-items: start;
+      min-width: 0; max-width: 100%;
     }
     .panel { padding: 12px; }
-    .panel h2 { font-size: 15px; margin: 0 0 8px; font-family: var(--mono); color: var(--cyan); letter-spacing: 0.04em; }
-    .objects { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow: auto; }
-    .objects button { text-align: left; width: 100%; }
-    .objects small, .note { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .panel h2 {
+      font-size: 15px; margin: 0; font-family: var(--mono); color: var(--cyan); letter-spacing: 0.04em;
+    }
+    details.panel, details.sub-details, details.hud-details {
+      min-width: 0; max-width: 100%;
+    }
+    details.panel { padding: 0; overflow: hidden; }
+    summary.panel-summary, summary.sub-summary {
+      list-style: none;
+      min-height: 44px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    summary.panel-summary::-webkit-details-marker,
+    summary.sub-summary::-webkit-details-marker { display: none; }
+    summary.panel-summary::after,
+    summary.sub-summary::after {
+      content: "▾";
+      font-family: var(--mono);
+      color: var(--cyan);
+      font-size: 14px;
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+    }
+    details:not([open]) > summary.panel-summary::after,
+    details:not([open]) > summary.sub-summary::after {
+      transform: rotate(-90deg);
+    }
+    .panel-body {
+      padding: 0 12px 12px;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .summary-meta {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      margin-left: auto;
+      margin-right: 6px;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .objects { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow-y: auto; overflow-x: hidden; }
+    .objects button {
+      text-align: left; width: 100%;
+      display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+      padding: 10px 12px; min-height: 48px;
+    }
+    .objects small, .note {
+      display: block; color: var(--muted); font-size: 14px;
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     .globe-wrap {
-      position: relative; height: 520px; width: 100%; max-width: 100%;
+      position: relative; height: 500px; width: 100%; max-width: 100%;
       background: radial-gradient(circle at center, #071126 0%, #02050e 100%);
       border-radius: 10px; overflow: hidden;
+      margin-top: 8px;
     }
-    #three-canvas { width: 100%; height: 100%; max-width: 100%; display: block; }
-    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-    dl { margin: 0; }
+    #three-canvas {
+      width: 100%; height: 100%; max-width: 100%; display: block;
+      touch-action: none;
+    }
+    .webgl-fallback {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px; text-align: center;
+      background: rgba(3, 7, 18, 0.92); color: var(--text);
+      font-size: 14px; line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .webgl-fallback[hidden] { display: none !important; }
+    .tabs {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+    }
+    .tabs [role="tab"] {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+    dl { margin: 0; min-width: 0; max-width: 100%; }
     .row {
       display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
       gap: 4px 10px; padding: 7px 0; border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+      min-width: 0;
     }
-    .row dt { color: var(--muted); }
-    .row dd { margin: 0; overflow-wrap: anywhere; }
-    .stack { display: flex; flex-direction: column; gap: 8px; }
+    .row dt { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+    .row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+    .stack { display: flex; flex-direction: column; gap: 8px; min-width: 0; max-width: 100%; }
     ul { margin: 6px 0 0; padding-left: 18px; }
+    li { overflow-wrap: anywhere; word-break: break-word; margin-bottom: 4px; }
     pre.notes {
-      white-space: pre-wrap; overflow-wrap: anywhere;
-      font: 12px/1.45 var(--mono); background: #020617; border-radius: 8px;
-      padding: 10px; max-height: 360px; overflow: auto;
+      white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+      font: 13px/1.45 var(--mono); background: #020617; border-radius: 8px;
+      padding: 10px; max-height: 360px; overflow: auto; max-width: 100%;
+    }
+    .loop-panel {
+      margin-top: 12px;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--mono); font-size: 12px; font-weight: 700;
+      padding: 4px 10px; border-radius: 999px; letter-spacing: 0.04em;
+      border: 1px solid var(--line);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge-live {
+      background: rgba(6, 78, 59, 0.85);
+      color: #6ee7b7;
+      border-color: var(--emerald);
+    }
+    .badge-fallback {
+      background: rgba(120, 53, 15, 0.9);
+      color: #fde68a;
+      border-color: var(--amber);
+    }
+    .badge-awaiting {
+      background: rgba(30, 41, 59, 0.85);
+      color: var(--muted);
+      border-color: rgba(148, 163, 184, 0.4);
+    }
+    .badge-disconnected {
+      background: rgba(76, 5, 25, 0.75);
+      color: #fda4af;
+      border-color: var(--rose);
+    }
+    .loop-prov-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 8px 0 12px;
+      background: rgba(15, 23, 42, 0.75);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .loop-prov-box.live { border-color: var(--emerald); }
+    .loop-prov-box.fallback { border-color: var(--amber); background: rgba(69, 26, 3, 0.35); }
+    .loop-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+      min-width: 0;
+    }
+    .screening-banner {
+      background: rgba(8, 47, 73, 0.45);
+      border-left: 3px solid var(--cyan);
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 10px 0;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .table-scroll {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: 8px;
+      margin: 8px 0;
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      text-align: left;
+    }
+    table.data-table th,
+    table.data-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(56, 189, 248, 0.14);
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    table.data-table th {
+      font-family: var(--mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(15, 23, 42, 0.9);
+      white-space: nowrap;
+    }
+    details.sub-details {
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.55);
+      margin-top: 10px;
+    }
+    details.sub-details > .sub-body {
+      padding: 0 12px 12px;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .sources-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+      min-width: 0;
+    }
+    .source-card {
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.65);
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .source-card-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    [hidden] { display: none !important; }
+    .header-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      min-width: 0;
+    }
+    .offline-banner {
+      border: 1px solid var(--rose);
+      border-left: 4px solid var(--rose);
+      border-radius: 10px;
+      background: rgba(76, 5, 25, 0.92);
+      color: #ffe4e6;
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .offline-banner strong {
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #fda4af;
+    }
+    .offline-banner span {
+      font-size: 14px;
+      color: var(--text);
+    }
+    .ios-install-hint {
+      border: 1px solid var(--cyan);
+      border-radius: 10px;
+      background: rgba(8, 47, 73, 0.9);
+      color: var(--text);
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .pwa-hud-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .pwa-status-chip {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 8px 12px;
+      min-height: 44px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(11, 19, 41, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      letter-spacing: 0.03em;
+      max-width: 100%;
+    }
+    .pwa-chip-sep { opacity: 0.65; }
+    .pwa-panels-toggle {
+      display: none;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(11, 19, 41, 0.92);
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      border-radius: 999px;
+      padding: 8px 16px;
+      min-height: 44px;
+      min-width: 44px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+    /* Full-screen live globe mode when launched standalone (display-mode standalone/fullscreen or ?source=pwa) */
+    html[data-pwa-standalone="true"] body {
+      overflow: hidden;
+    }
+    html[data-pwa-standalone="true"] header,
+    html[data-pwa-standalone="true"] #page-heading,
+    html[data-pwa-standalone="true"] #ios-install-hint {
+      display: none !important;
+    }
+    html[data-pwa-standalone="true"] #globe-panel {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      z-index: 1;
+      background: #02050e;
+    }
+    html[data-pwa-standalone="true"] #globe-heading {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    html[data-pwa-standalone="true"] #globe-panel .globe-wrap {
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      margin: 0;
+      border-radius: 0;
+    }
+    html[data-pwa-standalone="true"] #globe-caption {
+      position: fixed;
+      left: max(12px, var(--safe-left));
+      right: max(12px, var(--safe-right));
+      bottom: max(10px, var(--safe-bottom));
+      z-index: 10;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 8px;
+      background: rgba(3, 7, 18, 0.78);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      pointer-events: none;
+    }
+    html[data-pwa-standalone="true"] #pwa-hud-bar {
+      position: fixed;
+      top: max(10px, var(--safe-top));
+      left: max(12px, var(--safe-left));
+      right: max(12px, var(--safe-right));
+      z-index: 30;
+      margin: 0;
+      pointer-events: none;
+    }
+    html[data-pwa-standalone="true"] #pwa-status-chip,
+    html[data-pwa-standalone="true"] #pwa-panels-toggle {
+      pointer-events: auto;
+    }
+    html[data-pwa-standalone="true"] #pwa-panels-toggle {
+      display: inline-flex;
+    }
+    html[data-pwa-standalone="true"] #offline-banner {
+      position: fixed;
+      top: calc(max(10px, var(--safe-top)) + 52px);
+      left: max(12px, var(--safe-left));
+      right: max(12px, var(--safe-right));
+      z-index: 29;
+      margin: 0;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+    }
+    html[data-pwa-standalone="true"]:not([data-pwa-panels-open="true"]) #banner,
+    html[data-pwa-standalone="true"]:not([data-pwa-panels-open="true"]) #objects-panel,
+    html[data-pwa-standalone="true"]:not([data-pwa-panels-open="true"]) #detail-panel,
+    html[data-pwa-standalone="true"]:not([data-pwa-panels-open="true"]) #loop-panel {
+      display: none !important;
+    }
+    html[data-pwa-standalone="true"][data-pwa-panels-open="true"] main {
+      position: fixed;
+      top: calc(max(10px, var(--safe-top)) + 54px);
+      bottom: max(12px, var(--safe-bottom));
+      left: max(12px, var(--safe-left));
+      right: max(12px, var(--safe-right));
+      z-index: 20;
+      width: auto;
+      margin: 0;
+      padding: 12px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background: rgba(3, 7, 18, 0.94);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75);
+    }
+    html[data-pwa-standalone="true"][data-pwa-panels-open="true"] .workspace {
+      grid-template-columns: 1fr;
+    }
+    @media (display-mode: standalone), (display-mode: fullscreen) {
+      #pwa-panels-toggle {
+        display: inline-flex;
+      }
     }
     @media (max-width: 980px) {
-      h1 { font-size: 22px; }
-      header, main { padding: 10px 12px; }
-      .workspace { grid-template-columns: 1fr; }
-      .globe-wrap { height: 300px; }
-      .objects { max-height: 220px; }
-      .row { grid-template-columns: 1fr; }
+      body { font-size: 15px; }
+      h1 { font-size: 20px; margin: 6px 0 10px; }
+      header, main {
+        padding-left: max(12px, var(--safe-left));
+        padding-right: max(12px, var(--safe-right));
+      }
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+      /* Keep the 3D globe at the top on mobile/tablets and collapse panels beneath like a bottom sheet */
+      #globe-panel {
+        order: -1;
+      }
+      #objects-panel,
+      #detail-panel,
+      #loop-panel {
+        border-radius: 14px;
+        box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
+      }
+      .globe-wrap { height: 280px; }
+      .objects { max-height: 240px; }
+      .row { grid-template-columns: 1fr; gap: 2px; }
+      .toolbar button { flex: 1 1 calc(50% - 8px); }
+    }
+    @media (max-width: 480px) {
+      body { font-size: 14px; }
+      h1 { font-size: 18px; }
+      .globe-wrap { height: 240px; }
+      .metric { flex: 1 1 calc(50% - 8px); }
+      .toolbar button { flex: 1 1 100%; }
+      .loop-grid, .sources-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -121,10 +599,31 @@
       <strong>ORBITGUARD</strong>
       <span>Human-reviewed LEO monitoring. Depends on NanoDynamics. Does not command a spacecraft.</span>
     </div>
-    <nav id="product-links" aria-label="Related products"></nav>
+    <div class="header-actions">
+      <button type="button" id="install-pwa-btn" class="primary" hidden>Install app</button>
+      <nav id="product-links" aria-label="Related products"></nav>
+    </div>
   </header>
   <main id="workspace">
-    <h1>Monitor catalog states, conditions, and geometry</h1>
+    <div id="pwa-hud-bar" class="pwa-hud-bar" role="region" aria-label="Loop source mode and panel controls">
+      <div id="pwa-status-chip" class="pwa-status-chip badge-awaiting" role="status" aria-live="polite">
+        <span id="pwa-chip-mode">AWAITING ITERATION</span>
+        <span class="pwa-chip-sep" aria-hidden="true">·</span>
+        <span id="pwa-chip-age">age: not available</span>
+      </div>
+      <button type="button" id="pwa-panels-toggle" class="pwa-panels-toggle" aria-expanded="false" aria-controls="banner objects-panel detail-panel loop-panel">
+        Panels
+      </button>
+    </div>
+    <div id="offline-banner" class="offline-banner" role="alert" aria-live="assertive" hidden>
+      <strong id="offline-banner-title">Offline — telemetry is not live</strong>
+      <span id="offline-banner-copy">Network or monitoring API is unreachable. Data is not live; OrbitGuard does not show cached telemetry as live.</span>
+    </div>
+    <div id="ios-install-hint" class="ios-install-hint" role="note" hidden>
+      <span>On iOS Safari: tap <strong>Share -&gt; Add to Home Screen</strong> to launch OrbitGuard full-screen to the live globe.</span>
+      <button type="button" id="ios-install-dismiss" aria-label="Dismiss install hint">Dismiss</button>
+    </div>
+    <h1 id="page-heading">Monitor catalog states, conditions, and geometry</h1>
     <section id="banner" class="banner awaiting" aria-live="polite">
       <strong id="banner-title">Awaiting a catalog</strong>
       <p id="banner-copy">No positions are loaded. Public GP is a separate retrieval. Simulation sample is labelled and is not a live feed.</p>
@@ -143,70 +642,342 @@
         <button type="button" id="clear-catalog">Show empty state</button>
       </div>
     </section>
+
     <div class="workspace">
-      <section class="panel" aria-labelledby="objects-heading">
-        <h2 id="objects-heading">Objects</h2>
-        <div id="object-list" class="objects"></div>
-      </section>
-      <section class="panel">
-        <h2>Ground track</h2>
+      <details id="objects-panel" class="panel collapsible-panel" aria-labelledby="objects-heading" open>
+        <summary class="panel-summary" aria-expanded="true">
+          <h2 id="objects-heading">Objects</h2>
+          <span class="summary-meta" id="objects-summary-meta">0 loaded</span>
+        </summary>
+        <div class="panel-body">
+          <div id="object-list" class="objects"></div>
+        </div>
+      </details>
+
+      <section id="globe-panel" class="panel" aria-labelledby="globe-heading">
+        <h2 id="globe-heading">Ground track</h2>
         <div class="globe-wrap" id="viewport3d">
           <canvas id="three-canvas" aria-label="Earth display of derived ground tracks. Select objects from the list."></canvas>
+          <div id="webgl-fallback" class="webgl-fallback" role="status" aria-live="polite" hidden>
+            WebGL is unavailable on this browser or device. 3D ground-track rendering is disabled; numeric state vectors (UTC), provenance, and geometric screening tables remain available below.
+          </div>
         </div>
         <p id="globe-caption" class="note">No track. The globe is only a display of latitudes and longitudes the API returns. The display frame is TEME rotated by GMST, not ITRF.</p>
       </section>
-      <section class="panel">
-        <div class="tabs" role="tablist" aria-label="Object detail">
-          <button type="button" role="tab" id="tab-state" aria-controls="panel-state" aria-selected="true">State</button>
-          <button type="button" role="tab" id="tab-prov" aria-controls="panel-prov" aria-selected="false">Provenance</button>
-          <button type="button" role="tab" id="tab-env" aria-controls="panel-env" aria-selected="false">Conditions</button>
-          <button type="button" role="tab" id="tab-risk" aria-controls="panel-risk" aria-selected="false">Geometry</button>
-          <button type="button" role="tab" id="tab-sense" aria-controls="panel-sense" aria-selected="false">Sensors</button>
-          <button type="button" role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="false">Plan</button>
+
+      <details id="detail-panel" class="panel collapsible-panel" open>
+        <summary class="panel-summary" aria-expanded="true">
+          <h2 id="detail-heading">Object detail &amp; screening</h2>
+          <span class="summary-meta" id="detail-summary-meta">State · Provenance · Geometry</span>
+        </summary>
+        <div class="panel-body">
+          <div class="tabs" role="tablist" aria-label="Object detail">
+            <button type="button" role="tab" id="tab-state" aria-controls="panel-state" aria-selected="true">State</button>
+            <button type="button" role="tab" id="tab-prov" aria-controls="panel-prov" aria-selected="false">Provenance</button>
+            <button type="button" role="tab" id="tab-env" aria-controls="panel-env" aria-selected="false">Conditions</button>
+            <button type="button" role="tab" id="tab-risk" aria-controls="panel-risk" aria-selected="false">Geometry</button>
+            <button type="button" role="tab" id="tab-sense" aria-controls="panel-sense" aria-selected="false">Sensors</button>
+            <button type="button" role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="false">Plan</button>
+          </div>
+          <div id="panel-state" role="tabpanel" aria-labelledby="tab-state"></div>
+          <div id="panel-prov" role="tabpanel" aria-labelledby="tab-prov" hidden></div>
+          <div id="panel-env" role="tabpanel" aria-labelledby="tab-env" hidden></div>
+          <div id="panel-risk" role="tabpanel" aria-labelledby="tab-risk" hidden></div>
+          <div id="panel-sense" role="tabpanel" aria-labelledby="tab-sense" hidden></div>
+          <div id="panel-plan" role="tabpanel" aria-labelledby="tab-plan" hidden></div>
         </div>
-        <div id="panel-state" role="tabpanel" aria-labelledby="tab-state"></div>
-        <div id="panel-prov" role="tabpanel" aria-labelledby="tab-prov" hidden></div>
-        <div id="panel-env" role="tabpanel" aria-labelledby="tab-env" hidden></div>
-        <div id="panel-risk" role="tabpanel" aria-labelledby="tab-risk" hidden></div>
-        <div id="panel-sense" role="tabpanel" aria-labelledby="tab-sense" hidden></div>
-        <div id="panel-plan" role="tabpanel" aria-labelledby="tab-plan" hidden></div>
-      </section>
+      </details>
     </div>
+
+    <details id="loop-panel" class="panel loop-panel collapsible-panel" aria-labelledby="loop-heading" open>
+      <summary class="panel-summary" aria-expanded="true">
+        <h2 id="loop-heading">Tracking loop</h2>
+        <span id="loop-source-badge" class="badge badge-awaiting">AWAITING ITERATION</span>
+      </summary>
+      <div class="panel-body">
+        <div class="toolbar" style="margin-top: 4px; margin-bottom: 10px;">
+          <button type="button" class="primary" id="loop-run-once">Run loop iteration now</button>
+          <button type="button" id="loop-refresh">Refresh loop status</button>
+        </div>
+
+        <div id="loop-provenance-banner" class="loop-prov-box" aria-live="polite">
+          Requesting tracking loop telemetry…
+        </div>
+
+        <div id="loop-status-grid" class="loop-grid"></div>
+
+        <section aria-labelledby="loop-conjunctions-heading">
+          <h3 id="loop-conjunctions-heading">Conjunction screening</h3>
+          <p id="loop-screening-label" class="screening-banner">
+            Geometric screening - miss distance from propagated GP states. No collision probability. For human review.
+          </p>
+          <div id="loop-conjunctions-list">
+            <p class="note">Requesting conjunction screening list…</p>
+          </div>
+        </section>
+
+        <details id="loop-colocated-details" class="sub-details">
+          <summary class="sub-summary" aria-expanded="false">
+            <span id="loop-colocated-summary">Co-located (docked / attached) pairs (—)</span>
+          </summary>
+          <div class="sub-body">
+            <p id="loop-colocated-reason" class="note">—</p>
+            <div id="loop-colocated-list"></div>
+          </div>
+        </details>
+
+        <details id="loop-objects-details" class="sub-details">
+          <summary class="sub-summary" aria-expanded="false">
+            <span id="loop-objects-summary">Loop-tracked LEO objects (—)</span>
+          </summary>
+          <div class="sub-body">
+            <div id="loop-objects-list"></div>
+          </div>
+        </details>
+
+        <section aria-labelledby="loop-sources-heading" style="margin-top: 12px;">
+          <h3 id="loop-sources-heading">Sensor &amp; observation sources</h3>
+          <div id="loop-sources-list" class="sources-grid">
+            <p class="note">Requesting observation sources…</p>
+          </div>
+        </section>
+      </div>
+    </details>
   </main>
+
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script>
-    const state = { workspace: null, selected: null, environment: null, sensors: null, roadmap: null, notes: "", screen: null };
+    const state = {
+      workspace: null,
+      selected: null,
+      environment: null,
+      sensors: null,
+      roadmap: null,
+      notes: "",
+      screen: null,
+      loopStatus: null,
+      loopConjunctions: null,
+      loopObjects: null
+    };
     const colors = ["#00e5ff", "#fbbf24", "#38bdf8", "#e9d5ff", "#fb7185", "#34d399"];
-    let scene, camera, renderer, controls, trackGroup, earthMesh;
+    const LOOP_POLL_INTERVAL_MS = 30000;
+    let scene, camera, renderer, controls, trackGroup, loopTrackGroup, earthMesh;
+    let animFrameId = null;
+    let webglContextLost = false;
+    let loopPollTimer = null;
 
     function esc(value) {
       return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[ch]));
     }
+
+    function formatUtc(value, fallback) {
+      const fb = fallback !== undefined ? fallback : "—";
+      if (value == null || value === "") return fb;
+      const text = String(value).trim();
+      if (!text || text === "unknown" || text === "unavailable" || text === "not available" || text === "—") {
+        return text || fb;
+      }
+      if (/\bUTC\b/i.test(text)) return text;
+      if (text.startsWith("T+")) return text + " (relative)";
+      return text + " UTC";
+    }
+
     function ageText(seconds) {
-      if (seconds == null) return "unknown";
-      const ahead = seconds < 0;
-      const hours = Math.abs(seconds) / 3600;
-      const body = hours < 48 ? hours.toFixed(1) + " h" : (hours / 24).toFixed(1) + " d";
+      if (seconds == null || Number.isNaN(Number(seconds))) return "not available";
+      const num = Number(seconds);
+      const ahead = num < 0;
+      const abs = Math.abs(num);
+      let body;
+      if (abs < 60) {
+        body = abs.toFixed(0) + " s";
+      } else if (abs < 3600) {
+        body = (abs / 60).toFixed(1) + " min";
+      } else if (abs < 48 * 3600) {
+        body = (abs / 3600).toFixed(1) + " h";
+      } else {
+        body = (abs / 86400).toFixed(1) + " d";
+      }
       return (ahead ? "ahead of the clock by " : "") + body;
     }
+
+    function formatDuration(seconds) {
+      if (seconds == null || Number.isNaN(Number(seconds))) return "—";
+      const num = Number(seconds);
+      if (num < 60) return num.toFixed(0) + " s";
+      const mins = num / 60;
+      if (mins < 120) return mins.toFixed(1) + " min (" + num.toFixed(0) + " s)";
+      return (mins / 60).toFixed(2) + " h (" + num.toFixed(0) + " s)";
+    }
+
     function freshnessText(label) {
       if (label === "within_display_setting") return "inside the display setting";
       if (label === "older_than_display_setting") return "older than the display setting";
       if (label === "ahead_of_reference_clock") return "timestamp is ahead of the reference clock";
-      return "unknown";
+      return "not available";
     }
+
     async function getJson(url, options) {
-      const response = await fetch(url, options);
-      const payload = await response.json();
+      let response;
+      try {
+        response = await fetch(url, options);
+      } catch (networkErr) {
+        setOfflineBanner(
+          true,
+          "Network request failed (" + (networkErr && networkErr.message ? networkErr.message : "offline") + "). Data is not live; OrbitGuard does not show cached telemetry as live."
+        );
+        throw networkErr;
+      }
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = payload.detail || response.statusText;
+        if (response.status === 503 && payload.error === "offline") {
+          setOfflineBanner(true, typeof detail === "string" ? detail : "No network; OrbitGuard does not show cached telemetry as live.");
+        }
         throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
       }
       return payload;
     }
+
+    let apiOffline = false;
+    let iosHintDismissed = false;
+    let deferredInstallPrompt = null;
+
+    function setOfflineBanner(isOffline, detailText) {
+      apiOffline = Boolean(isOffline);
+      const banner = document.getElementById("offline-banner");
+      const copy = document.getElementById("offline-banner-copy");
+      const browserOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const showOffline = apiOffline || browserOffline;
+      if (banner) {
+        banner.hidden = !showOffline;
+      }
+      if (copy && showOffline) {
+        copy.textContent = detailText || (
+          browserOffline
+            ? "Browser reports navigator.onLine = false. Data is not live; OrbitGuard does not show cached telemetry as live."
+            : "Monitoring API request failed. Data is not live; OrbitGuard does not show cached telemetry as live."
+        );
+      }
+      updatePwaStatusChip();
+    }
+
+    function updatePwaStatusChip() {
+      const chip = document.getElementById("pwa-status-chip");
+      const chipMode = document.getElementById("pwa-chip-mode");
+      const chipAge = document.getElementById("pwa-chip-age");
+      if (!chip || !chipMode || !chipAge) return;
+
+      const browserOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const st = state.loopStatus;
+      const conj = state.loopConjunctions;
+      const prov = (st && st.provenance) || (conj && conj.provenance) || {};
+      const sourceMode = (st && st.source_mode) || prov.source_mode || null;
+      const snapAgeS = st && st.snapshot_age_s != null ? st.snapshot_age_s : prov.snapshot_age_s;
+      const dataAgeS = st && st.data_age_s != null ? st.data_age_s : prov.data_age_s;
+
+      if (browserOffline || (apiOffline && !st)) {
+        chip.className = "pwa-status-chip badge-disconnected";
+        chipMode.textContent = "OFFLINE (NOT LIVE)";
+        chipAge.textContent = dataAgeS != null ? "last API data age: " + ageText(dataAgeS) : "data age: not available";
+        return;
+      }
+
+      if (sourceMode === "live") {
+        chip.className = "pwa-status-chip badge-live";
+        chipMode.textContent = "LIVE";
+        chipAge.textContent = "data age: " + ageText(dataAgeS);
+      } else if (sourceMode === "github_snapshot") {
+        chip.className = "pwa-status-chip badge-fallback";
+        chipMode.textContent = "GITHUB SNAPSHOT";
+        const effectiveAge = snapAgeS != null ? snapAgeS : dataAgeS;
+        chipAge.textContent = "snapshot age: " + ageText(effectiveAge);
+      } else if (sourceMode === "snapshot_fallback") {
+        chip.className = "pwa-status-chip badge-fallback";
+        chipMode.textContent = "SNAPSHOT FALLBACK";
+        const effectiveAge = snapAgeS != null ? snapAgeS : dataAgeS;
+        chipAge.textContent = "snapshot age: " + ageText(effectiveAge);
+      } else {
+        chip.className = "pwa-status-chip badge-awaiting";
+        chipMode.textContent = "AWAITING ITERATION";
+        chipAge.textContent = "data age: not available";
+      }
+    }
+
+    function isStandaloneLaunch() {
+      try {
+        const searchParams = new URLSearchParams(window.location.search);
+        if (searchParams.get("source") === "pwa") return true;
+      } catch (_err) {}
+      if (typeof navigator !== "undefined" && navigator.standalone === true) return true;
+      if (typeof window.matchMedia === "function") {
+        if (window.matchMedia("(display-mode: standalone)").matches) return true;
+        if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
+      }
+      return false;
+    }
+
+    function isIosSafariNotStandalone() {
+      if (isStandaloneLaunch() || typeof navigator === "undefined") return false;
+      const ua = navigator.userAgent || "";
+      const isIosDevice =
+        /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      const isSafariEngine =
+        /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo/i.test(ua);
+      return Boolean(isIosDevice && isSafariEngine);
+    }
+
+    function syncIosInstallHint() {
+      const hint = document.getElementById("ios-install-hint");
+      if (!hint) return;
+      hint.hidden = iosHintDismissed || !isIosSafariNotStandalone();
+    }
+
+    function syncStandaloneMode() {
+      const standalone = isStandaloneLaunch();
+      document.documentElement.dataset.pwaStandalone = standalone ? "true" : "false";
+      if (!standalone) {
+        delete document.documentElement.dataset.pwaPanelsOpen;
+      }
+      const installBtn = document.getElementById("install-pwa-btn");
+      if (installBtn && standalone) {
+        installBtn.hidden = true;
+      }
+      syncIosInstallHint();
+      resize3D();
+    }
+
+    function syncDetailsAria() {
+      document.querySelectorAll("details").forEach((det) => {
+        const sum = det.querySelector(":scope > summary");
+        if (!sum) return;
+        sum.setAttribute("aria-expanded", String(det.open));
+        det.addEventListener("toggle", () => {
+          sum.setAttribute("aria-expanded", String(det.open));
+        });
+      });
+    }
+
+    function applyResponsivePanelDefaults() {
+      const isPhoneOrTablet = window.matchMedia && window.matchMedia("(max-width: 768px)").matches;
+      const objPanel = document.getElementById("objects-panel");
+      const detPanel = document.getElementById("detail-panel");
+      if (isPhoneOrTablet) {
+        if (objPanel && !objPanel.dataset.userToggled) objPanel.open = false;
+        if (detPanel && !detPanel.dataset.userToggled) detPanel.open = false;
+      } else {
+        if (objPanel) objPanel.open = true;
+        if (detPanel) detPanel.open = true;
+      }
+      document.querySelectorAll("details").forEach((det) => {
+        const sum = det.querySelector(":scope > summary");
+        if (sum) sum.setAttribute("aria-expanded", String(det.open));
+      });
+    }
+
     function setBanner(workspace) {
       const banner = document.getElementById("banner");
       const tone = workspace.mode === "simulation_sample" ? "sample" : workspace.mode === "public_gp" ? "public" : workspace.mode === "gp_snapshot" ? "snapshot" : "awaiting";
@@ -218,30 +989,35 @@
         : "";
       let copy = "Positions stay empty until you retrieve the stations group or turn the sample on.";
       if (workspace.mode === "public_gp") {
-        copy = "Live CelesTrak download by this process. Source " + (workspace.source_url || "CelesTrak GP JSON") + ". Retrieved " + (workspace.retrieved_at || "unknown") + ".";
+        copy = "Live CelesTrak download by this process. Source " + (workspace.source_url || "CelesTrak GP JSON") + ". Retrieved " + formatUtc(workspace.retrieved_at, "not available") + ".";
       } else if (workspace.mode === "gp_snapshot") {
-        copy = "Stations snapshot, not a live download by this process. Retrieved " + (workspace.retrieved_at || "unknown") + " by " + (workspace.retrieved_by || "the snapshot job") + ". Source " + (workspace.source_url || "unknown") + ". " + (workspace.snapshot_note || "");
+        copy = "Stations snapshot, not a live download by this process. Retrieved " + formatUtc(workspace.retrieved_at, "not available") + " by " + (workspace.retrieved_by || "the snapshot job") + ". Source " + (workspace.source_url || "not available") + ". " + (workspace.snapshot_note || "");
       } else if (workspace.mode === "simulation_sample") {
-        copy = "Simulation sample. Synthetic mean elements, propagated with SGP4 and shown at the element epoch. Not a live catalog.";
+        copy = "Simulation sample. Synthetic mean elements, propagated with SGP4 and shown at the element epoch (UTC). Not a live catalog.";
       }
       document.getElementById("banner-copy").textContent = copy + extra;
       const count = (workspace.objects || []).length;
       document.getElementById("hud-count").textContent = String(count);
+      const objMeta = document.getElementById("objects-summary-meta");
+      if (objMeta) objMeta.textContent = count + " loaded";
     }
+
     function renderIndex(row, node) {
       if (!row) {
-        node.textContent = "unavailable";
+        node.textContent = "not available";
         return;
       }
-      const value = row.value == null ? "unavailable" : row.value;
+      const value = row.value == null ? "not available" : row.value;
       node.textContent = value + (row.unit ? " " + row.unit : "") + " · " + row.status;
     }
+
     function renderHudEnvironment() {
       const env = state.environment;
       if (!env) return;
       renderIndex(env.f107, document.getElementById("hud-f107"));
       renderIndex(env.planetary_k, document.getElementById("hud-kp"));
     }
+
     function renderObjects() {
       const list = document.getElementById("object-list");
       list.replaceChildren();
@@ -260,18 +1036,30 @@
         const title = document.createElement("strong");
         title.textContent = object.name;
         const meta = document.createElement("small");
-        const altitude = object.state ? object.state.altitude_km.toFixed(1) + " km derived" : "position unavailable";
+        const altitude = object.state ? object.state.altitude_km.toFixed(1) + " km derived" : "position not available";
         meta.textContent = object.mode_label + " · " + altitude;
         button.append(title, meta);
-        button.addEventListener("click", () => { state.selected = object.id; renderObjects(); renderDetail(); draw(); });
+        button.addEventListener("click", () => {
+          state.selected = object.id;
+          renderObjects();
+          renderDetail();
+          draw();
+          const detPanel = document.getElementById("detail-panel");
+          if (detPanel) {
+            detPanel.open = true;
+            detPanel.dataset.userToggled = "true";
+          }
+        });
         button.style.borderColor = colors[index % colors.length];
         list.append(button);
       });
     }
+
     function selectedObject() {
       const objects = (state.workspace && state.workspace.objects) || [];
       return objects.find((object) => object.id === state.selected) || objects[0] || null;
     }
+
     function definition(pairs) {
       const list = document.createElement("dl");
       pairs.forEach(([term, value]) => {
@@ -286,11 +1074,16 @@
       });
       return list;
     }
+
     function renderDetail() {
       const object = selectedObject();
       if (object) state.selected = object.id;
       const panel = document.getElementById("panel-state");
       panel.replaceChildren();
+      const detMeta = document.getElementById("detail-summary-meta");
+      if (detMeta) {
+        detMeta.textContent = object ? object.name : "No object selected";
+      }
       if (!object) {
         const p = document.createElement("p");
         p.className = "note";
@@ -303,13 +1096,13 @@
           ["Mode", object.mode_label],
           ["Catalog number", object.norad_cat_id == null ? "not a NORAD identity" : object.norad_cat_id],
           ["Designator", object.international_designator],
-          ["Element epoch", object.element_epoch],
-          ["State time", object.state_time || "unavailable"],
+          ["Element epoch (UTC)", formatUtc(object.element_epoch, "not available")],
+          ["State time (UTC)", formatUtc(object.state_time, "not available")],
           ["Frame of the propagated state", object.reference_frame],
           ["Theory", object.mean_element_theory + " / " + object.gravity_constants],
-          ["Latitude", object.state ? object.state.latitude_deg.toFixed(3) + " deg, derived" : "unavailable"],
-          ["Longitude", object.state ? object.state.longitude_deg.toFixed(3) + " deg, derived" : "unavailable"],
-          ["Altitude", object.state ? object.state.altitude_km.toFixed(2) + " km, derived, WGS-84" : "unavailable"],
+          ["Latitude", object.state ? object.state.latitude_deg.toFixed(3) + " deg, derived" : "not available"],
+          ["Longitude", object.state ? object.state.longitude_deg.toFixed(3) + " deg, derived" : "not available"],
+          ["Altitude", object.state ? object.state.altitude_km.toFixed(2) + " km, derived, WGS-84" : "not available"],
           ["Propagation", (object.propagation_errors && object.propagation_errors.length) ? object.propagation_errors.map((item) => item.message || JSON.stringify(item)).join(" ") : "returned a state"],
           ["Pc", "not computable"],
           ["Nc", "not implemented"],
@@ -319,9 +1112,10 @@
       renderRisk();
       const caption = document.getElementById("globe-caption");
       caption.textContent = object && object.state
-        ? object.name + " at " + object.state_time + ". Display frame is TEME rotated by GMST, not ITRF. Track color is an index, not a risk."
+        ? object.name + " at " + formatUtc(object.state_time, "not available") + ". Display frame is TEME rotated by GMST, not ITRF. Track color is an index, not a risk."
         : "No track. The globe is only a display of latitudes and longitudes the API returns. The display frame is TEME rotated by GMST, not ITRF.";
     }
+
     function renderProvenance(object) {
       const panel = document.getElementById("panel-prov");
       panel.replaceChildren();
@@ -334,13 +1128,13 @@
         const title = document.createElement("h3");
         title.textContent = row.name;
         block.append(title, definition([
-          ["Value", row.value == null ? "unavailable" : row.value],
+          ["Value", row.value == null ? "not available" : row.value],
           ["Unit", row.unit || "—"],
           ["Status", row.status],
           ["Frame", row.reference_frame || "—"],
-          ["Time system", row.time_system || "—"],
-          ["Observation time", row.observation_time || "unknown"],
-          ["Retrieval time", row.retrieval_time || "unknown"],
+          ["Time system", row.time_system || "UTC"],
+          ["Observation time (UTC)", formatUtc(row.observation_time, "not available")],
+          ["Retrieval time (UTC)", formatUtc(row.retrieval_time, "not available")],
           ["Epoch age", ageText(row.epoch_age_s) + " (" + freshnessText(row.epoch_freshness) + ")"],
           ["Retrieval age", ageText(row.retrieval_age_s) + " (" + freshnessText(row.retrieval_freshness) + ")"],
           ["Source", row.source_name],
@@ -350,6 +1144,7 @@
         panel.append(block);
       });
     }
+
     function renderEnvironment() {
       const panel = document.getElementById("panel-env");
       panel.replaceChildren();
@@ -364,19 +1159,20 @@
       }
       ["f107", "planetary_k", "tec", "thermospheric_density"].forEach((key) => {
         const row = env[key];
+        if (!row) return;
         const block = document.createElement("article");
         const title = document.createElement("h3");
         title.textContent = row.name;
         block.append(title, definition([
-          ["Value", row.value == null ? "unavailable" : row.value],
+          ["Value", row.value == null ? "not available" : row.value],
           ["Unit", row.unit || "—"],
           ["Status", row.status],
-          ["Observation time", row.observation_time || "unknown"],
-          ["Retrieval time", row.retrieval_time || "unknown"],
+          ["Observation time (UTC)", formatUtc(row.observation_time, "not available")],
+          ["Retrieval time (UTC)", formatUtc(row.retrieval_time, "not available")],
           ["Epoch age", ageText(row.epoch_age_s)],
           ["Retrieval age", ageText(row.retrieval_age_s)],
-          ["Source", row.source_url || row.source_name],
-          ["Note", row.note],
+          ["Source", row.source_url || row.source_name || "—"],
+          ["Note", row.note || "—"],
         ]));
         panel.append(block);
       });
@@ -388,6 +1184,7 @@
       });
       panel.append(list);
     }
+
     function renderRisk() {
       const panel = document.getElementById("panel-risk");
       const objects = (state.workspace && state.workspace.objects) || [];
@@ -402,6 +1199,8 @@
         const secondary = document.createElement("select");
         primary.id = "screen-primary";
         secondary.id = "screen-secondary";
+        primary.setAttribute("aria-label", "Primary object for geometric screen");
+        secondary.setAttribute("aria-label", "Secondary object for geometric screen");
         objects.forEach((object, index) => {
           const a = document.createElement("option");
           a.value = object.id;
@@ -429,7 +1228,7 @@
           ["Mode", result.mode_label || result.mode],
           ["Frame", result.frame || "—"],
           ["Closest sample", result.geometric_miss_km == null ? "not available" : result.geometric_miss_km.toFixed(3) + " km"],
-          ["Sample time", result.time_of_closest_sample || "—"],
+          ["Sample time (UTC)", formatUtc(result.time_of_closest_sample, "—")],
           ["Relative speed", result.relative_speed_km_s == null ? "—" : result.relative_speed_km_s.toFixed(3) + " km/s"],
           ["Pc", "not computable"],
           ["Nc", "not implemented"],
@@ -440,6 +1239,7 @@
       }
       panel.replaceChildren(wrap);
     }
+
     async function runScreen() {
       const primary = document.getElementById("screen-primary").value;
       const secondary = document.getElementById("screen-secondary").value;
@@ -460,6 +1260,7 @@
       }
       renderRisk();
     }
+
     function renderSensors() {
       const panel = document.getElementById("panel-sense");
       panel.replaceChildren();
@@ -483,6 +1284,7 @@
         panel.append(block);
       });
     }
+
     function renderPlan() {
       const panel = document.getElementById("panel-plan");
       panel.replaceChildren();
@@ -507,6 +1309,324 @@
       notes.textContent = state.notes || "Operator notes are loading.";
       panel.append(notes);
     }
+
+    function renderLoopPanel() {
+      const st = state.loopStatus;
+      const conj = state.loopConjunctions;
+      const objs = state.loopObjects;
+
+      const badge = document.getElementById("loop-source-badge");
+      const provBanner = document.getElementById("loop-provenance-banner");
+      const statusGrid = document.getElementById("loop-status-grid");
+      const conjList = document.getElementById("loop-conjunctions-list");
+      const colocSummary = document.getElementById("loop-colocated-summary");
+      const colocReason = document.getElementById("loop-colocated-reason");
+      const colocList = document.getElementById("loop-colocated-list");
+      const objSummary = document.getElementById("loop-objects-summary");
+      const objList = document.getElementById("loop-objects-list");
+      const sourcesList = document.getElementById("loop-sources-list");
+
+      if (!st) {
+        badge.className = "badge badge-awaiting";
+        badge.textContent = "not available";
+        provBanner.className = "loop-prov-box";
+        provBanner.textContent = "Tracking loop status is not available.";
+        updatePwaStatusChip();
+        return;
+      }
+
+      const prov = st.provenance || (conj && conj.provenance) || {};
+      const sourceMode = st.source_mode || prov.source_mode || null;
+      const retrievedAt = prov.retrieved_at || (st.last_iteration && st.last_iteration.retrieved_at) || null;
+      const fallbackReason = prov.fallback_reason || (st.last_iteration && st.last_iteration.fallback_reason) || null;
+      const snapAgeS = st.snapshot_age_s != null ? st.snapshot_age_s : prov.snapshot_age_s;
+      const dataAgeS = st.data_age_s != null ? st.data_age_s : prov.data_age_s;
+      updatePwaStatusChip();
+
+      if (sourceMode === "live") {
+        badge.className = "badge badge-live";
+        badge.textContent = "LIVE";
+        provBanner.className = "loop-prov-box live";
+        provBanner.textContent =
+          "LIVE retrieval (" + (prov.source_name || "celestrak_gp_json") + "). " +
+          "Retrieved at " + formatUtc(retrievedAt, "—") + ". " +
+          "Data age: " + ageText(dataAgeS) + ". " +
+          (fallbackReason ? "Partial fallback reason: " + fallbackReason + ". " : "") +
+          (prov.snapshot_coverage_note ? prov.snapshot_coverage_note : "");
+      } else if (sourceMode === "github_snapshot") {
+        badge.className = "badge badge-fallback";
+        badge.textContent = "GITHUB SNAPSHOT";
+        provBanner.className = "loop-prov-box fallback";
+        provBanner.textContent =
+          "GITHUB SNAPSHOT (" + (prov.source_name || "github_celestrak_snapshot") + ") — committed CelesTrak GP snapshot from GitHub, NOT a live CelesTrak download. " +
+          "Snapshot age: " + ageText(snapAgeS) + " (retrieved at " + formatUtc(retrievedAt, "—") + "). " +
+          (fallbackReason ? "Skipped group(s): " + fallbackReason + ". " : "") +
+          (st.cap_reason ? st.cap_reason + " " : "");
+      } else if (sourceMode === "snapshot_fallback") {
+        badge.className = "badge badge-fallback";
+        badge.textContent = "SNAPSHOT FALLBACK";
+        provBanner.className = "loop-prov-box fallback";
+        provBanner.textContent =
+          "SNAPSHOT FALLBACK (" + (prov.source_name || "celestrak_stations_snapshot") + ") — committed stations.json snapshot, NOT a live download. " +
+          "Fallback reason: " + (fallbackReason || "live retrieval failed") + ". " +
+          "Snapshot age: " + ageText(snapAgeS) + " (retrieved at " + formatUtc(retrievedAt, "—") + "). " +
+          (prov.snapshot_coverage_note ? prov.snapshot_coverage_note : "");
+      } else {
+        badge.className = "badge badge-awaiting";
+        badge.textContent = "AWAITING ITERATION";
+        provBanner.className = "loop-prov-box";
+        provBanner.textContent =
+          "No tracking loop iteration has run yet. Trigger 'Run loop iteration now' to retrieve, propagate (1/8 orbital period), and screen LEO objects.";
+      }
+
+      const lastIter = st.last_iteration;
+      const lastTime = st.last_finished_at || st.last_started_at || null;
+      const horizonObj = st.horizon || {};
+      let horizonText = "1/8 orbital period";
+      if (horizonObj.min_horizon_s != null) {
+        const minH = formatDuration(horizonObj.min_horizon_s);
+        const maxH = horizonObj.max_horizon_s != null ? formatDuration(horizonObj.max_horizon_s) : minH;
+        horizonText = "1/8 orbital period (" + (minH === maxH ? minH : minH + " – " + maxH) + ", step " + (st.step_s != null ? st.step_s + " s" : "—") + ")";
+      } else if (st.step_s != null) {
+        horizonText = "1/8 orbital period (step " + st.step_s + " s)";
+      }
+
+      const objectCountVal = lastIter && lastIter.object_count != null
+        ? String(lastIter.object_count) + " LEO (" + (lastIter.propagated_count || 0) + " propagated, " + (lastIter.reused_count || 0) + " cached)"
+        : (objs && objs.count != null ? String(objs.count) : "0");
+
+      const pairCountsVal = (st.screened_pair_count != null && st.skipped_pair_count != null)
+        ? st.screened_pair_count + " screened / " + st.skipped_pair_count + " skipped (" + (st.total_pair_count != null ? st.total_pair_count : (st.screened_pair_count + st.skipped_pair_count)) + " total)"
+        : "—";
+
+      statusGrid.replaceChildren(
+        definition([
+          ["Running / Enabled", (st.running ? "running" : "stopped") + " / " + (st.enabled ? "enabled" : "disabled")],
+          ["Iteration count", st.iteration_count != null ? String(st.iteration_count) + " (retaining last " + (st.keep_iterations != null ? st.keep_iterations : "—") + ")" : "—"],
+          ["Last iteration (UTC)", formatUtc(lastTime, "—")],
+          ["Cadence", st.cadence_s != null ? formatDuration(st.cadence_s) + " (1/8 shortest period)" : "—"],
+          ["Horizon", horizonText],
+          ["Groups", (st.groups && st.groups.length) ? st.groups.join(", ") : "—"]
+        ]),
+        definition([
+          ["Source mode", sourceMode === "live" ? "LIVE (live)" : sourceMode === "snapshot_fallback" ? "SNAPSHOT FALLBACK (snapshot_fallback)" : "—"],
+          ["Fallback reason", fallbackReason || "—"],
+          ["Snapshot age", snapAgeS != null ? ageText(snapAgeS) : (sourceMode === "live" ? "— (live feed)" : "—")],
+          ["Data age", dataAgeS != null ? ageText(dataAgeS) : "—"],
+          ["Retrieved at (UTC)", formatUtc(retrievedAt, "—")],
+          ["Object count", objectCountVal],
+          ["Screened / skipped pairs", pairCountsVal],
+          ["Last error", st.last_error || "none"]
+        ])
+      );
+
+      // Conjunction screening list
+      conjList.replaceChildren();
+      const conjItems = (conj && conj.conjunctions) || [];
+      const thresholdKm = (conj && conj.threshold_km != null) ? conj.threshold_km : (st.threshold_km != null ? st.threshold_km : "—");
+      if (!conjItems.length) {
+        const emptyP = document.createElement("p");
+        emptyP.className = "note";
+        emptyP.textContent = "No close approaches under " + thresholdKm + " km in this horizon.";
+        conjList.append(emptyP);
+      } else {
+        const scroll = document.createElement("div");
+        scroll.className = "table-scroll";
+        const table = document.createElement("table");
+        table.className = "data-table";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Pair</th><th>Min miss (km)</th><th>TCA (UTC)</th><th>Relative speed</th><th>Frame</th></tr>";
+        const tbody = document.createElement("tbody");
+        conjItems.forEach((item) => {
+          const tr = document.createElement("tr");
+          const tdPair = document.createElement("td");
+          tdPair.textContent = item.primary_name + " (#" + item.primary_norad_id + ") × " + item.secondary_name + " (#" + item.secondary_norad_id + ")";
+          const tdMiss = document.createElement("td");
+          tdMiss.textContent = item.min_miss_km != null ? Number(item.min_miss_km).toFixed(3) + " km" : "not available";
+          const tdTca = document.createElement("td");
+          tdTca.textContent = formatUtc(item.tca, "—");
+          const tdSpeed = document.createElement("td");
+          tdSpeed.textContent = item.relative_speed_km_s != null ? Number(item.relative_speed_km_s).toFixed(3) + " km/s" : "—";
+          const tdFrame = document.createElement("td");
+          tdFrame.textContent = item.frame || "TEME";
+          tr.append(tdPair, tdMiss, tdTca, tdSpeed, tdFrame);
+          tbody.append(tr);
+        });
+        table.append(thead, tbody);
+        scroll.append(table);
+        conjList.append(scroll);
+      }
+
+      // Co-located (docked/attached) pairs
+      const colocItems = (conj && conj.co_located) || [];
+      const colocCount = (conj && conj.co_located_count != null) ? conj.co_located_count : colocItems.length;
+      colocSummary.textContent = "Co-located (docked / attached) pairs (" + colocCount + ") — separate from close approaches";
+      colocReason.textContent = "Reason: " + ((conj && conj.co_located_reason) || "near-identical propagated states over the whole horizon; likely docked/attached or sharing an element set - not a close approach");
+      colocList.replaceChildren();
+      if (!colocItems.length) {
+        const emptyColoc = document.createElement("p");
+        emptyColoc.className = "note";
+        emptyColoc.textContent = "No co-located (docked/attached) pairs in this iteration.";
+        colocList.append(emptyColoc);
+      } else {
+        const scroll = document.createElement("div");
+        scroll.className = "table-scroll";
+        const table = document.createElement("table");
+        table.className = "data-table";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Pair</th><th>Min / Max distance (km)</th><th>Max relative speed</th><th>Sample time (UTC)</th><th>Reason</th></tr>";
+        const tbody = document.createElement("tbody");
+        colocItems.forEach((item) => {
+          const tr = document.createElement("tr");
+          const tdPair = document.createElement("td");
+          tdPair.textContent = item.primary_name + " (#" + item.primary_norad_id + ") + " + item.secondary_name + " (#" + item.secondary_norad_id + ")";
+          const tdDist = document.createElement("td");
+          const minD = item.min_miss_km != null ? Number(item.min_miss_km).toFixed(3) : "—";
+          const maxD = item.max_miss_km != null ? Number(item.max_miss_km).toFixed(3) : "—";
+          tdDist.textContent = minD + " / " + maxD + " km";
+          const tdSpd = document.createElement("td");
+          tdSpd.textContent = item.max_relative_speed_km_s != null ? Number(item.max_relative_speed_km_s).toFixed(4) + " km/s" : "—";
+          const tdTca = document.createElement("td");
+          tdTca.textContent = formatUtc(item.tca, "—");
+          const tdReason = document.createElement("td");
+          tdReason.textContent = item.reason || "—";
+          tr.append(tdPair, tdDist, tdSpd, tdTca, tdReason);
+          tbody.append(tr);
+        });
+        table.append(thead, tbody);
+        scroll.append(table);
+        colocList.append(scroll);
+      }
+
+      // Loop-tracked objects
+      const trackedObjs = (objs && objs.objects) || [];
+      objSummary.textContent = "Loop-tracked LEO objects (" + (objs && objs.count != null ? objs.count : trackedObjs.length) + ")";
+      objList.replaceChildren();
+      if (!trackedObjs.length) {
+        const emptyObj = document.createElement("p");
+        emptyObj.className = "note";
+        emptyObj.textContent = "No loop-tracked objects recorded yet.";
+        objList.append(emptyObj);
+      } else {
+        const scroll = document.createElement("div");
+        scroll.className = "table-scroll";
+        const table = document.createElement("table");
+        table.className = "data-table";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Object (NORAD)</th><th>Epoch (UTC)</th><th>Epoch age</th><th>Propagated horizon (1/8 period)</th><th>Perigee / Apogee</th></tr>";
+        const tbody = document.createElement("tbody");
+        trackedObjs.forEach((o) => {
+          const tr = document.createElement("tr");
+          const tdName = document.createElement("td");
+          tdName.textContent = o.name + " (#" + o.norad_id + ")";
+          const tdEpoch = document.createElement("td");
+          tdEpoch.textContent = formatUtc(o.epoch, "—");
+          const tdAge = document.createElement("td");
+          tdAge.textContent = o.epoch_age_hours != null ? Number(o.epoch_age_hours).toFixed(2) + " h" : "—";
+          const tdHor = document.createElement("td");
+          const ph = o.propagated_horizon;
+          if (ph) {
+            const durMin = ph.duration_minutes != null ? Number(ph.duration_minutes).toFixed(1) + " min" : formatDuration(ph.duration_s);
+            tdHor.textContent = durMin + " · " + (ph.sample_count != null ? ph.sample_count : "—") + " samples (" + formatUtc(ph.start, "—") + " → " + formatUtc(ph.end, "—") + ")";
+          } else {
+            tdHor.textContent = "—";
+          }
+          const tdAlt = document.createElement("td");
+          tdAlt.textContent = (o.perigee_altitude_km != null && o.apogee_altitude_km != null)
+            ? Number(o.perigee_altitude_km).toFixed(1) + " / " + Number(o.apogee_altitude_km).toFixed(1) + " km"
+            : "—";
+          tr.append(tdName, tdEpoch, tdAge, tdHor, tdAlt);
+          tbody.append(tr);
+        });
+        table.append(thead, tbody);
+        scroll.append(table);
+        objList.append(scroll);
+      }
+
+      // Observation / sensor sources
+      sourcesList.replaceChildren();
+      const sources = st.sources || [];
+      if (!sources.length) {
+        const emptySrc = document.createElement("p");
+        emptySrc.className = "note";
+        emptySrc.textContent = "No observation sources reported.";
+        sourcesList.append(emptySrc);
+      } else {
+        sources.forEach((src) => {
+          const card = document.createElement("article");
+          card.className = "source-card";
+          const header = document.createElement("div");
+          header.className = "source-card-header";
+          const title = document.createElement("strong");
+          title.textContent = src.name + " (" + (src.kind || "source") + ")";
+          const sBadge = document.createElement("span");
+          const stVal = src.status || "unknown";
+          if (stVal === "not_connected" || src.connected === false) {
+            sBadge.className = "badge badge-disconnected";
+            sBadge.textContent = "not connected";
+          } else if (stVal === "live") {
+            sBadge.className = "badge badge-live";
+            sBadge.textContent = "live";
+          } else if (stVal === "snapshot_fallback") {
+            sBadge.className = "badge badge-fallback";
+            sBadge.textContent = "snapshot fallback";
+          } else {
+            sBadge.className = "badge badge-awaiting";
+            sBadge.textContent = stVal;
+          }
+          header.append(title, sBadge);
+          const noteP = document.createElement("p");
+          noteP.className = "note";
+          noteP.textContent = src.note || (src.pipeline_entry_point ? src.pipeline_entry_point : "—");
+          card.append(header, noteP);
+          sourcesList.append(card);
+        });
+      }
+    }
+
+    async function refreshLoopPanel() {
+      try {
+        const [st, conj, objs] = await Promise.all([
+          getJson("/api/orbitguard/loop/status"),
+          getJson("/api/orbitguard/loop/conjunctions"),
+          getJson("/api/orbitguard/loop/objects")
+        ]);
+        state.loopStatus = st;
+        state.loopConjunctions = conj;
+        state.loopObjects = objs;
+        if (typeof navigator === "undefined" || navigator.onLine !== false) {
+          setOfflineBanner(false);
+        }
+        renderLoopPanel();
+        draw();
+      } catch (error) {
+        setOfflineBanner(
+          true,
+          "Loop API unreachable (" + error.message + "). Data shown is not live; OrbitGuard does not show cached telemetry as live."
+        );
+        const provBanner = document.getElementById("loop-provenance-banner");
+        if (provBanner) {
+          provBanner.textContent = "Loop endpoints did not respond: " + error.message;
+        }
+      }
+    }
+
+    function startLoopPolling() {
+      if (loopPollTimer != null || document.hidden) return;
+      loopPollTimer = setInterval(() => {
+        if (!document.hidden) {
+          refreshLoopPanel();
+        }
+      }, LOOP_POLL_INTERVAL_MS);
+    }
+
+    function stopLoopPolling() {
+      if (loopPollTimer != null) {
+        clearInterval(loopPollTimer);
+        loopPollTimer = null;
+      }
+    }
+
     function latLonToVec(latDeg, lonDeg, radius) {
       const lat = latDeg * Math.PI / 180;
       const lon = lonDeg * Math.PI / 180;
@@ -516,17 +1636,82 @@
         -radius * Math.cos(lat) * Math.sin(lon)
       );
     }
+
+    function showWebglFallback(message) {
+      const fb = document.getElementById("webgl-fallback");
+      const canvas = document.getElementById("three-canvas");
+      if (fb) {
+        if (message) fb.textContent = message;
+        fb.hidden = false;
+      }
+      if (canvas) {
+        canvas.setAttribute("aria-hidden", "true");
+      }
+    }
+
+    function hideWebglFallback() {
+      const fb = document.getElementById("webgl-fallback");
+      const canvas = document.getElementById("three-canvas");
+      if (fb) fb.hidden = true;
+      if (canvas) canvas.removeAttribute("aria-hidden");
+    }
+
     function init3D() {
-      if (typeof THREE === "undefined") return;
-      const container = document.getElementById("viewport3d");
-      scene = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
-      camera.position.set(0, 18, 42);
-      renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("three-canvas"), antialias: true, alpha: true });
+      const canvas = document.getElementById("three-canvas");
+      if (canvas) {
+        canvas.addEventListener("webglcontextlost", (event) => {
+          event.preventDefault();
+          webglContextLost = true;
+          stopAnimationLoop();
+          showWebglFallback(
+            "WebGL context was lost on this device. 3D ground-track rendering is paused until the graphics context is restored; numeric telemetry (UTC) and geometric screening remain active."
+          );
+        }, false);
+        canvas.addEventListener("webglcontextrestored", () => {
+          webglContextLost = false;
+          hideWebglFallback();
+          resize3D();
+          draw();
+          startAnimationLoop();
+        }, false);
+      }
+
+      if (typeof THREE === "undefined" || typeof window.WebGLRenderingContext === "undefined") {
+        showWebglFallback(
+          "WebGL is unavailable in this browser or device. 3D ground-track rendering is disabled; numeric state vectors (UTC), provenance, and geometric screening tables remain available."
+        );
+        return;
+      }
+
+      try {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+        camera.position.set(0, 18, 42);
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        hideWebglFallback();
+      } catch (err) {
+        renderer = null;
+        showWebglFallback(
+          "WebGL could not be initialized (" + (err && err.message ? err.message : "context unavailable") + "). Numeric catalog states (UTC) and geometric screening remain available."
+        );
+        return;
+      }
+
       if (typeof THREE.OrbitControls === "function") {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
+        controls.enableRotate = true;
+        controls.enableZoom = true;
+        controls.enablePan = false;
+        controls.minDistance = 20;
+        controls.maxDistance = 90;
+        if (typeof THREE.TOUCH !== "undefined") {
+          controls.touches = {
+            ONE: THREE.TOUCH.ROTATE,
+            TWO: THREE.TOUCH.DOLLY_PAN
+          };
+        }
       }
       scene.add(new THREE.AmbientLight(0xffffff, 0.45));
       const sun = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -542,29 +1727,57 @@
         new THREE.MeshBasicMaterial({ color: 0x00e5ff, wireframe: true, transparent: true, opacity: 0.16 })
       ));
       trackGroup = new THREE.Group();
+      loopTrackGroup = new THREE.Group();
       scene.add(trackGroup);
+      scene.add(loopTrackGroup);
       resize3D();
-      animate();
+      startAnimationLoop();
     }
+
     function resize3D() {
-      if (!renderer) return;
+      if (!renderer || !camera || webglContextLost) return;
       const container = document.getElementById("viewport3d");
-      const width = Math.max(1, container.clientWidth);
-      const height = Math.max(1, container.clientHeight);
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width || container.clientWidth || 1));
+      const height = Math.max(1, Math.round(rect.height || container.clientHeight || 1));
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       renderer.setSize(width, height, false);
+      if (scene) renderer.render(scene, camera);
     }
+
     function animate() {
-      requestAnimationFrame(animate);
+      if (document.hidden || webglContextLost || !renderer) {
+        animFrameId = null;
+        return;
+      }
+      animFrameId = requestAnimationFrame(animate);
       if (earthMesh) earthMesh.rotation.y += 0.0006;
       if (controls) controls.update();
       renderer.render(scene, camera);
     }
+
+    function startAnimationLoop() {
+      if (animFrameId == null && !document.hidden && !webglContextLost && renderer) {
+        animFrameId = requestAnimationFrame(animate);
+      }
+    }
+
+    function stopAnimationLoop() {
+      if (animFrameId != null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+    }
+
     function draw() {
       if (!trackGroup) return;
       while (trackGroup.children.length) trackGroup.remove(trackGroup.children[0]);
+      if (loopTrackGroup) {
+        while (loopTrackGroup.children.length) loopTrackGroup.remove(loopTrackGroup.children[0]);
+      }
       const selected = selectedObject();
       const objects = (state.workspace && state.workspace.objects) || [];
       const radius = 15.2;
@@ -579,7 +1792,7 @@
           const material = new THREE.LineBasicMaterial({ color: colors[index % colors.length] });
           trackGroup.add(new THREE.Line(geometry, material));
         }
-        if (object.state && object.state.latitude_deg != null) {
+        if (object.state && object.state.latitude_deg != null && object.state.longitude_deg != null) {
           const marker = new THREE.Mesh(
             new THREE.SphereGeometry(object.id === (selected && selected.id) ? 0.32 : 0.18, 12, 12),
             new THREE.MeshBasicMaterial({ color: colors[index % colors.length] })
@@ -588,7 +1801,23 @@
           trackGroup.add(marker);
         }
       });
+
+      // Highlight real propagated loop-tracked object positions on the globe when available
+      if (loopTrackGroup && state.loopObjects && Array.isArray(state.loopObjects.objects)) {
+        const loopRadius = 15.28;
+        state.loopObjects.objects.forEach((obj) => {
+          const st = obj.latest_state;
+          if (!st || st.latitude_deg == null || st.longitude_deg == null) return;
+          const marker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.14, 10, 10),
+            new THREE.MeshBasicMaterial({ color: 0x34d399 })
+          );
+          marker.position.copy(latLonToVec(st.latitude_deg, st.longitude_deg, loopRadius));
+          loopTrackGroup.add(marker);
+        });
+      }
     }
+
     function showTab(id) {
       document.querySelectorAll("[role=tab]").forEach((tab) => {
         const on = tab.id === id;
@@ -596,6 +1825,7 @@
         document.getElementById(tab.getAttribute("aria-controls")).hidden = !on;
       });
     }
+
     document.querySelectorAll("[role=tab]").forEach((tab, index, tabs) => {
       tab.addEventListener("click", () => showTab(tab.id));
       tab.addEventListener("keydown", (event) => {
@@ -606,6 +1836,7 @@
         showTab(tabs[next].id);
       });
     });
+
     async function loadWorkspace(mode) {
       state.screen = null;
       state.workspace = await getJson("/api/orbitguard/workspace?mode=" + encodeURIComponent(mode));
@@ -615,6 +1846,7 @@
       renderDetail();
       draw();
     }
+
     document.getElementById("load-public").addEventListener("click", async () => {
       const banner = document.getElementById("banner-copy");
       banner.textContent = "Requesting the stations group once. A recent cache is reused and is not a new download.";
@@ -625,7 +1857,7 @@
           const snap = report.snapshot;
           let extra = " No snapshot was substituted.";
           if (snap && snap.available) {
-            extra += " A snapshot retrieved " + snap.retrieved_at + " from " + snap.source_url + " is packaged. Load stations snapshot to open it. Age " + ageText(snap.retrieval_age_s) + ".";
+            extra += " A snapshot retrieved " + formatUtc(snap.retrieved_at, "not available") + " from " + snap.source_url + " is packaged. Load stations snapshot to open it. Age " + ageText(snap.retrieval_age_s) + ".";
           }
           banner.textContent = "Live CelesTrak request failed: HTTP " + (report.http_status || "network") + ". " + (report.excerpt || report.reason || "") + extra;
           return;
@@ -639,6 +1871,7 @@
         banner.textContent = "Retrieval failed: " + error.message + " No snapshot was substituted.";
       }
     });
+
     document.getElementById("load-snapshot").addEventListener("click", async () => {
       const banner = document.getElementById("banner-copy");
       banner.textContent = "Loading the packaged stations snapshot. This does not contact CelesTrak.";
@@ -650,12 +1883,155 @@
         banner.textContent = "Snapshot was not loaded: " + error.message;
       }
     });
+
     document.getElementById("load-sample").addEventListener("click", () => loadWorkspace("simulation_sample").catch((error) => {
       document.getElementById("banner-copy").textContent = error.message;
     }));
+
     document.getElementById("clear-catalog").addEventListener("click", () => loadWorkspace("awaiting"));
-    window.addEventListener("resize", () => { resize3D(); });
+
+    document.getElementById("loop-run-once").addEventListener("click", async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      const provBanner = document.getElementById("loop-provenance-banner");
+      if (provBanner) {
+        provBanner.textContent = "Running synchronous tracking loop iteration (retrieve → store → propagate 1/8 period → geometric screen)…";
+      }
+      try {
+        await getJson("/api/orbitguard/loop/run-once", { method: "POST" });
+        await refreshLoopPanel();
+      } catch (error) {
+        if (provBanner) {
+          provBanner.textContent = "Loop iteration failed: " + error.message;
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("loop-refresh").addEventListener("click", () => {
+      refreshLoopPanel();
+    });
+
+    ["objects-panel", "detail-panel", "loop-panel"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const sum = el.querySelector(":scope > summary");
+      if (sum) {
+        sum.addEventListener("click", () => {
+          el.dataset.userToggled = "true";
+        });
+      }
+    });
+
+    syncDetailsAria();
+    applyResponsivePanelDefaults();
+    syncStandaloneMode();
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setOfflineBanner(true, "Browser reports navigator.onLine = false. Data is not live; OrbitGuard does not show cached telemetry as live.");
+    }
+
+    const pwaPanelsToggle = document.getElementById("pwa-panels-toggle");
+    if (pwaPanelsToggle) {
+      pwaPanelsToggle.addEventListener("click", () => {
+        const isOpen = document.documentElement.dataset.pwaPanelsOpen === "true";
+        const nextOpen = !isOpen;
+        document.documentElement.dataset.pwaPanelsOpen = nextOpen ? "true" : "false";
+        pwaPanelsToggle.setAttribute("aria-expanded", String(nextOpen));
+        pwaPanelsToggle.textContent = nextOpen ? "Close panels" : "Panels";
+        resize3D();
+      });
+    }
+
+    const installPwaBtn = document.getElementById("install-pwa-btn");
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      deferredInstallPrompt = event;
+      if (installPwaBtn && !isStandaloneLaunch()) {
+        installPwaBtn.hidden = false;
+      }
+    });
+    if (installPwaBtn) {
+      installPwaBtn.addEventListener("click", async () => {
+        if (!deferredInstallPrompt) return;
+        deferredInstallPrompt.prompt();
+        try {
+          await deferredInstallPrompt.userChoice;
+        } catch (_err) {}
+        deferredInstallPrompt = null;
+        installPwaBtn.hidden = true;
+      });
+    }
+    window.addEventListener("appinstalled", () => {
+      deferredInstallPrompt = null;
+      if (installPwaBtn) installPwaBtn.hidden = true;
+      syncStandaloneMode();
+    });
+
+    const iosDismissBtn = document.getElementById("ios-install-dismiss");
+    if (iosDismissBtn) {
+      iosDismissBtn.addEventListener("click", () => {
+        iosHintDismissed = true;
+        syncIosInstallHint();
+      });
+    }
+
+    if (typeof window.matchMedia === "function") {
+      ["(display-mode: standalone)", "(display-mode: fullscreen)"].forEach((query) => {
+        const mql = window.matchMedia(query);
+        if (mql && typeof mql.addEventListener === "function") {
+          mql.addEventListener("change", syncStandaloneMode);
+        }
+      });
+    }
+
+    window.addEventListener("offline", () => {
+      setOfflineBanner(true, "Network disconnected (navigator.onLine is false). Data is not live; OrbitGuard does not show cached telemetry as live.");
+    });
+    window.addEventListener("online", () => {
+      setOfflineBanner(false);
+      refreshLoopPanel();
+    });
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+      });
+    }
+
+    window.addEventListener("resize", () => {
+      resize3D();
+      applyResponsivePanelDefaults();
+    });
+    window.addEventListener("orientationchange", () => {
+      resize3D();
+      setTimeout(resize3D, 100);
+      setTimeout(resize3D, 300);
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => { resize3D(); });
+    }
+    if (typeof ResizeObserver === "function") {
+      const vp = document.getElementById("viewport3d");
+      if (vp) {
+        new ResizeObserver(() => { resize3D(); }).observe(vp);
+      }
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        stopAnimationLoop();
+        stopLoopPolling();
+      } else {
+        resize3D();
+        startAnimationLoop();
+        startLoopPolling();
+        refreshLoopPanel();
+      }
+    });
+
     init3D();
+    startLoopPolling();
+
     const params = new URLSearchParams(location.search);
     const requested = params.get("mode");
     const initialMode = (requested === "simulation_sample" || requested === "public_gp" || requested === "gp_snapshot") ? requested : "awaiting";
@@ -665,8 +2041,10 @@
       }
       return loadWorkspace(initialMode);
     })();
+
     Promise.all([
       openInitial,
+      refreshLoopPanel(),
       getJson("/api/orbitguard/links").then((payload) => {
         const nav = document.getElementById("product-links");
         if (!payload.nanodynamics_url) return;

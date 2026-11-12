@@ -63,13 +63,21 @@ from nanodynamics.frames import (
     teme_to_display,
 )
 from nanodynamics.propagation import (
+    MU_EARTH,
     MeanElementsNotOsculating,
+    R_EARTH,
     propagate_osculating_cartesian,
     propagate_sgp4,
     satrec_from_omm,
     satrec_from_tle,
     two_body_max_position_error_m,
 )
+
+# Standard WGS-72 constants used by SGP4 alongside NanoDynamics Earth constants.
+WGS72_MU_KM3_S2 = 398600.8
+WGS72_RADIUS_EARTH_KM = 6378.135
+EARTH_MU_KM3_S2 = float(MU_EARTH) * 1e-9 if MU_EARTH else WGS72_MU_KM3_S2
+EARTH_RADIUS_KM = float(R_EARTH) * 1e-3 if R_EARTH else WGS72_RADIUS_EARTH_KM
 
 PIN_SHA = "d22c000a304e4484ce58461afde31981647483bf"
 PIN_REPO = "https://github.com/joachimgrobbelaar/NanoDynamics"
@@ -79,18 +87,24 @@ __all__ = [
     "CELESTRAK_GP_DOC",
     "DISPLAY_FRAME",
     "DISPLAY_FRAME_NOTE",
+    "EARTH_MU_KM3_S2",
+    "EARTH_RADIUS_KM",
     "GMST_J2000_DEG",
     "GP_CENTER",
     "GP_MEAN_ELEMENT_THEORY",
     "GP_REFERENCE_FRAME",
     "GP_TIME_SYSTEM",
+    "MU_EARTH",
     "MeanElementsNotOsculating",
     "NUMERICAL_FRAME",
     "NUMERICAL_FRAME_NOTE",
     "PIN_SHA",
     "REQUIREMENT",
+    "R_EARTH",
     "RecordRejected",
     "SGP4_GRAVITY",
+    "WGS72_MU_KM3_S2",
+    "WGS72_RADIUS_EARTH_KM",
     "canonical_hash",
     "catalog_number_from_line1",
     "checksum",

@@ -1,8 +1,10 @@
-name: CelesTrak stations snapshot
+name: CelesTrak GP-group snapshots
 
 # CelesTrak asks clients not to download a GP group more often than every
-# two hours. This job is scheduled at that interval and the script refuses
-# a second download while the saved snapshot is younger than two hours.
+# two hours. This job is scheduled at that interval and the script enforces
+# the 2-hour minimum interval independently for each configured group
+# (stations, active, cosmos-1408-debris, cosmos-2251-debris,
+# fengyun-1c-debris, iridium-33-debris) via <group>.meta.json.
 on:
   schedule:
     - cron: "0 */2 * * *"
@@ -21,14 +23,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Download the stations group once
+      - name: Download configured CelesTrak GP groups sequentially
         run: python scripts/fetch_celestrak_snapshot.py
 
-      - name: Commit the snapshot when it changed
+      - name: Commit GP-group snapshots when changed
         run: |
-          git diff --quiet -- data/gp && exit 0
+          git add data/gp/
+          git diff --cached --quiet -- data/gp && exit 0
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/gp/stations.json data/gp/stations.meta.json
-          git commit -m "Refresh the CelesTrak stations snapshot"
+          git commit -m "Refresh CelesTrak GP-group snapshots (not a live feed)"
           git push

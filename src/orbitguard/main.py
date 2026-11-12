@@ -6,16 +6,18 @@ a collision probability, recommend a maneuver, or command a spacecraft.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from orbitguard import __version__
 from orbitguard.config import settings
-from orbitguard.monitor.api import router as monitor_router
+from orbitguard.monitor.api import get_loop, router as monitor_router
+from orbitguard.monitor.loop import is_loop_enabled
 from orbitguard.nd import api_status
 
 logging.basicConfig(
@@ -27,6 +29,27 @@ logger = logging.getLogger("orbitguard")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 INDEX_PATH = STATIC_DIR / "index.html"
+MANIFEST_PATH = STATIC_DIR / "manifest.webmanifest"
+SW_PATH = STATIC_DIR / "sw.js"
+ICONS_DIR = STATIC_DIR / "icons"
+APPLE_TOUCH_ICON_PATH = ICONS_DIR / "apple-touch-icon.png"
+
+_ICON_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    loop = get_loop()
+    if is_loop_enabled():
+        loop.start()
+    try:
+        yield
+    finally:
+        loop.stop()
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -35,6 +58,7 @@ app = FastAPI(
         "Human-reviewed LEO monitoring. Public GP states, NOAA indices, and "
         "geometric miss distance. Collision probability is not computed."
     ),
+    lifespan=lifespan,
 )
 app.include_router(monitor_router)
 
@@ -61,6 +85,57 @@ def root():
     if INDEX_PATH.is_file():
         return FileResponse(INDEX_PATH)
     return {"message": "OrbitGuard monitoring API is active.", "docs_url": "/docs"}
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    if not MANIFEST_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    return FileResponse(MANIFEST_PATH, media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    if not SW_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Service worker not found")
+    return FileResponse(
+        SW_PATH,
+        media_type="application/javascript",
+        headers={
+            "Service-Worker-Allowed": "/",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    if not APPLE_TOUCH_ICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="apple-touch-icon.png not found")
+    return FileResponse(APPLE_TOUCH_ICON_PATH, media_type="image/png")
+
+
+@app.get("/icons/{name}")
+@app.get("/icons/{name:path}", include_in_schema=False)
+def icon_file(name: str):
+    if (
+        not name
+        or ".." in name
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+        or name.startswith(".")
+        or Path(name).name != name
+    ):
+        raise HTTPException(status_code=400, detail="Invalid icon path")
+    icons_root = ICONS_DIR.resolve()
+    candidate = (icons_root / name).resolve()
+    if candidate.parent != icons_root or not candidate.is_relative_to(icons_root):
+        raise HTTPException(status_code=400, detail="Invalid icon path")
+    media_type = _ICON_MEDIA_TYPES.get(candidate.suffix.lower())
+    if media_type is None or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Icon not found")
+    return FileResponse(candidate, media_type=media_type)
 
 
 if __name__ == "__main__":
