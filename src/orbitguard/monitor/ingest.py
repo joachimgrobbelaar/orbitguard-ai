@@ -21,6 +21,7 @@ from orbitguard.monitor.constants import (
     ALLOWED_PUBLIC_GROUP,
     CELESTRAK_MIN_REFETCH_S,
     CELESTRAK_STATIONS_URL,
+    CELESTRAK_TIMEOUT_S,
     SPACETRACK_DOC,
     USER_AGENT,
 )
@@ -37,7 +38,23 @@ class HttpResult:
     url: str
 
 
-def default_transport(url: str, timeout_s: float = 20.0) -> HttpResult:
+# Statuses that may be a transient gateway or throttle. 504 is how this
+# client reports a timeout or a URLError. Each request gets one backoff.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _failure_body(exc: BaseException) -> bytes:
+    if isinstance(exc, urllib.error.URLError) and exc.reason is not None:
+        return str(exc.reason).encode("utf-8")
+    return str(exc).encode("utf-8")
+
+
+def default_transport(url: str, timeout_s: float = CELESTRAK_TIMEOUT_S) -> HttpResult:
+    """GET ``url``. Network failures become HTTP 504 with the reason as the body.
+
+    ``urllib.error.HTTPError`` keeps its status code. ``URLError`` and
+    ``TimeoutError`` do not escape this function.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
@@ -45,6 +62,23 @@ def default_transport(url: str, timeout_s: float = 20.0) -> HttpResult:
     except urllib.error.HTTPError as exc:
         payload = exc.read() if exc.fp is not None else b""
         return HttpResult(status=int(exc.code), body=payload, url=url)
+    except urllib.error.URLError as exc:
+        return HttpResult(status=504, body=_failure_body(exc), url=url)
+    except TimeoutError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
+
+
+def invoke_transport(transport: Transport, url: str) -> HttpResult:
+    """Call ``transport`` and turn a leaked network error into status 504."""
+    try:
+        return transport(url)
+    except urllib.error.HTTPError as exc:
+        payload = exc.read() if exc.fp is not None else b""
+        return HttpResult(status=int(exc.code), body=payload, url=url)
+    except urllib.error.URLError as exc:
+        return HttpResult(status=504, body=_failure_body(exc), url=url)
+    except TimeoutError as exc:
+        return HttpResult(status=504, body=str(exc).encode("utf-8"), url=url)
 
 
 class CatalogStore:
@@ -181,11 +215,11 @@ def fetch_public_stations(
         }
 
     url = CELESTRAK_STATIONS_URL
-    result = transport(url)
+    result = invoke_transport(transport, url)
     calls = 1
-    if result.status in {429, 500, 502, 503}:
+    if result.status in RETRY_STATUSES:
         sleeper(2.0)
-        result = transport(url)
+        result = invoke_transport(transport, url)
         calls += 1
     entry = {
         "time": iso(now),

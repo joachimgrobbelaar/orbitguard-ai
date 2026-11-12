@@ -61,8 +61,13 @@ nanodynamics @ git+https://github.com/joachimgrobbelaar/NanoDynamics@d22c000a304
 ## What is implemented
 
 - One public CelesTrak request for `GROUP=stations&FORMAT=JSON`, cached for
-  two hours. HTTP 301, 403, and 404 are not retried. Records are validated,
-  hashed, and stored once.
+  two hours. The client waits 45 seconds. A timeout or `URLError` is HTTP
+  504 with the reason as the body, then one retry. HTTP 301, 403, and 404
+  are not retried. Records are validated, hashed, and stored once.
+- A stations snapshot in `data/gp/`, written by
+  `.github/workflows/celestrak-snapshot.yml` no faster than every two hours.
+  **Load stations snapshot** opens that file and shows its retrieval time,
+  age, and CelesTrak source. A failed live request does not load it.
 - Per-quantity provenance: observation time, retrieval time, both ages,
   source, unit, frame, and measured / modelled / derived / unavailable.
 - NOAA F10.7 in solar flux units and estimated Kp as a dimensionless index,

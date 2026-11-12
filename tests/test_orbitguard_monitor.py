@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 import json
 import math
 from pathlib import Path
+import urllib.error
+import urllib.request
 
 import numpy as np
 import pytest
@@ -26,7 +29,8 @@ from nanodynamics.propagation import (
 from orbitguard import nd
 from orbitguard.monitor.api import build_test_router, product_links
 from orbitguard.monitor.environment import build_environment, parse_f107, parse_kp
-from orbitguard.monitor.ingest import HttpResult
+from orbitguard.monitor.ingest import HttpResult, default_transport, fetch_public_stations, invoke_transport
+from orbitguard.monitor.constants import CELESTRAK_TIMEOUT_S
 from orbitguard.monitor.risk import assess_covariance
 from orbitguard.monitor.service import MonitorService
 
@@ -167,6 +171,115 @@ def test_public_fetch_is_one_group_and_does_not_retry_403(tmp_path):
     assert calls == ["https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON"]
     assert "CATNR" not in calls[0]
     assert "s3cr3t" not in json.dumps(first)
+
+
+def test_transport_timeout_is_45s_and_network_errors_are_504(monkeypatch):
+    assert inspect.signature(default_transport).parameters["timeout_s"].default == CELESTRAK_TIMEOUT_S
+    assert CELESTRAK_TIMEOUT_S >= 30.0
+
+    def raise_urlerror(request, timeout):
+        raise urllib.error.URLError(TimeoutError("The read operation timed out"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_urlerror)
+    result = default_transport("https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON")
+    assert result.status == 504
+    assert b"timed out" in result.body.lower()
+
+    def raise_timeout(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_timeout)
+    timeout = default_transport("https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON")
+    assert timeout.status == 504
+    assert timeout.body == b"timed out"
+
+    def raising(url: str) -> HttpResult:
+        raise urllib.error.URLError("Name or service not known")
+
+    caught = invoke_transport(raising, "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON")
+    assert caught.status == 504
+    assert b"Name or service not known" in caught.body
+
+
+def test_504_is_retried_once_and_does_not_load_the_snapshot(tmp_path, monkeypatch):
+    calls = []
+
+    def transport(url: str) -> HttpResult:
+        calls.append(url)
+        return HttpResult(status=504, body=b"The read operation timed out", url=url)
+
+    directory = tmp_path / "packaged"
+    directory.mkdir()
+    record = {
+        "OBJECT_NAME": "ISS (ZARYA)",
+        "OBJECT_ID": "1998-067A",
+        "EPOCH": "2026-11-04T21:15:15.204960",
+        "MEAN_MOTION": 15.49180468,
+        "ECCENTRICITY": 0.00072122,
+        "INCLINATION": 51.6327,
+        "RA_OF_ASC_NODE": 323.8448,
+        "ARG_OF_PERICENTER": 348.649,
+        "MEAN_ANOMALY": 11.4335,
+        "EPHEMERIS_TYPE": 0,
+        "CLASSIFICATION_TYPE": "U",
+        "NORAD_CAT_ID": 25544,
+        "ELEMENT_SET_NO": 999,
+        "REV_AT_EPOCH": 59356,
+        "BSTAR": 0.00010456704,
+        "MEAN_MOTION_DOT": 5.352e-05,
+        "MEAN_MOTION_DDOT": 0,
+    }
+    (directory / "stations.json").write_text(json.dumps([record]), encoding="utf-8")
+    (directory / "stations.meta.json").write_text(
+        json.dumps(
+            {
+                "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON",
+                "source_name": "celestrak_stations_snapshot",
+                "retrieved_at": "2026-11-01T00:00:00Z",
+                "retrieved_by": "github-actions",
+                "note": "Snapshot of one CelesTrak stations download.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("orbitguard.monitor.snapshot.snapshot_directory", lambda: directory)
+    client, service = _client(tmp_path, transport)
+    report = client.post("/api/orbitguard/catalog/refresh").json()
+    assert report["http_status"] == 504
+    assert report["calls"] == 2
+    assert report["reason"] == "gave_up_after_one_backoff"
+    assert "timed out" in report["excerpt"]
+    assert report["snapshot_loaded"] is False
+    assert report["snapshot"]["available"] is True
+    assert report["snapshot"]["retrieved_at"] == "2026-11-01T00:00:00Z"
+    assert len(calls) == 2
+    public = client.get("/api/orbitguard/workspace", params={"mode": "public_gp"}).json()
+    assert public["objects"] == []
+    untouched = client.get("/api/orbitguard/workspace", params={"mode": "gp_snapshot"}).json()
+    assert untouched["objects"] == []
+    assert "not been loaded" in untouched["mode_label"]
+    loaded = client.post("/api/orbitguard/catalog/snapshot").json()
+    assert loaded["live_download"] is False
+    assert loaded["network_request"] is False
+    assert loaded["retrieved_at"] == "2026-11-01T00:00:00Z"
+    assert loaded["source_name"] == "celestrak_stations_snapshot"
+    body = client.get("/api/orbitguard/workspace", params={"mode": "gp_snapshot"}).json()
+    assert body["live_download"] is False
+    assert "not a live download" in body["mode_label"]
+    assert body["retrieved_at"] == "2026-11-01T00:00:00Z"
+    assert body["retrieved_by"] == "github-actions"
+    assert body["objects"][0]["mode"] == "gp_snapshot"
+    assert "snapshot" in body["objects"][0]["mode_label"].lower()
+    assert service.store.load().get("latest_public") in (None, {})
+    direct = fetch_public_stations(
+        service.store,
+        now=datetime(2026, 11, 12, tzinfo=timezone.utc),
+        transport=transport,
+        sleeper=lambda _seconds: None,
+        min_interval_s=0,
+    )
+    assert direct["http_status"] == 504
+    assert direct["calls"] == 2
 
 
 def test_epoch_age_is_not_retrieval_age_and_sample_is_labelled(tmp_path):
@@ -457,6 +570,8 @@ def test_page_marks_sample_mode_and_does_not_claim_a_live_subscription():
     assert "overflow-x" in html
     assert 'name="viewport"' in html
     assert "huggingface.co/spaces" not in html
+    assert "Load stations snapshot" in html
+    assert "No snapshot was substituted" in html
 
 
 def test_physics_is_imported_not_vendored():

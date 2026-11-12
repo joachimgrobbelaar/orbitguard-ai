@@ -54,6 +54,7 @@
     }
     .banner { padding: 12px 14px; margin-bottom: 12px; }
     .banner.sample { border-color: #c084fc; }
+    .banner.snapshot { border-color: #fbbf24; }
     .banner.public { border-color: #34d399; }
     .banner.awaiting { border-color: #fbbf24; }
     .banner p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
@@ -137,6 +138,7 @@
       </div>
       <div class="toolbar">
         <button type="button" class="primary" id="load-public">Retrieve stations GP</button>
+        <button type="button" id="load-snapshot">Load stations snapshot</button>
         <button type="button" id="load-sample">Simulation sample</button>
         <button type="button" id="clear-catalog">Show empty state</button>
       </div>
@@ -207,7 +209,8 @@
     }
     function setBanner(workspace) {
       const banner = document.getElementById("banner");
-      banner.className = "banner " + (workspace.mode === "simulation_sample" ? "sample" : workspace.mode === "public_gp" ? "public" : "awaiting");
+      const tone = workspace.mode === "simulation_sample" ? "sample" : workspace.mode === "public_gp" ? "public" : workspace.mode === "gp_snapshot" ? "snapshot" : "awaiting";
+      banner.className = "banner " + tone;
       document.getElementById("banner-title").textContent = workspace.mode_label;
       const settings = workspace.display_settings;
       const extra = settings
@@ -215,7 +218,9 @@
         : "";
       let copy = "Positions stay empty until you retrieve the stations group or turn the sample on.";
       if (workspace.mode === "public_gp") {
-        copy = "Source " + (workspace.source_url || "CelesTrak GP JSON") + ". Retrieved " + (workspace.retrieved_at || "unknown") + ".";
+        copy = "Live CelesTrak download by this process. Source " + (workspace.source_url || "CelesTrak GP JSON") + ". Retrieved " + (workspace.retrieved_at || "unknown") + ".";
+      } else if (workspace.mode === "gp_snapshot") {
+        copy = "Stations snapshot, not a live download by this process. Retrieved " + (workspace.retrieved_at || "unknown") + " by " + (workspace.retrieved_by || "the snapshot job") + ". Source " + (workspace.source_url || "unknown") + ". " + (workspace.snapshot_note || "");
       } else if (workspace.mode === "simulation_sample") {
         copy = "Simulation sample. Synthetic mean elements, propagated with SGP4 and shown at the element epoch. Not a live catalog.";
       }
@@ -615,13 +620,34 @@
       banner.textContent = "Requesting the stations group once. A recent cache is reused and is not a new download.";
       try {
         const report = await getJson("/api/orbitguard/catalog/refresh", { method: "POST" });
+        const liveOk = report.http_status === 200 || report.reason === "cached_within_refetch_interval";
+        if (!liveOk) {
+          const snap = report.snapshot;
+          let extra = " No snapshot was substituted.";
+          if (snap && snap.available) {
+            extra += " A snapshot retrieved " + snap.retrieved_at + " from " + snap.source_url + " is packaged. Load stations snapshot to open it. Age " + ageText(snap.retrieval_age_s) + ".";
+          }
+          banner.textContent = "Live CelesTrak request failed: HTTP " + (report.http_status || "network") + ". " + (report.excerpt || report.reason || "") + extra;
+          return;
+        }
         await loadWorkspace("public_gp");
         document.documentElement.dataset.catalog = "public";
         if (!state.workspace.objects.length) {
-          banner.textContent = "No stations were stored. " + (report.reason || report.excerpt || "The feed did not return a catalog.");
+          banner.textContent = "No stations were stored. " + (report.reason || report.excerpt || "The feed did not return a catalog.") + " No snapshot was substituted.";
         }
       } catch (error) {
-        banner.textContent = "Retrieval failed: " + error.message + " No sample positions were substituted.";
+        banner.textContent = "Retrieval failed: " + error.message + " No snapshot was substituted.";
+      }
+    });
+    document.getElementById("load-snapshot").addEventListener("click", async () => {
+      const banner = document.getElementById("banner-copy");
+      banner.textContent = "Loading the packaged stations snapshot. This does not contact CelesTrak.";
+      try {
+        await getJson("/api/orbitguard/catalog/snapshot", { method: "POST" });
+        await loadWorkspace("gp_snapshot");
+        document.documentElement.dataset.catalog = "snapshot";
+      } catch (error) {
+        banner.textContent = "Snapshot was not loaded: " + error.message;
       }
     });
     document.getElementById("load-sample").addEventListener("click", () => loadWorkspace("simulation_sample").catch((error) => {
@@ -632,9 +658,15 @@
     init3D();
     const params = new URLSearchParams(location.search);
     const requested = params.get("mode");
-    const initialMode = (requested === "simulation_sample" || requested === "public_gp") ? requested : "awaiting";
+    const initialMode = (requested === "simulation_sample" || requested === "public_gp" || requested === "gp_snapshot") ? requested : "awaiting";
+    const openInitial = (async () => {
+      if (initialMode === "gp_snapshot") {
+        await getJson("/api/orbitguard/catalog/snapshot", { method: "POST" });
+      }
+      return loadWorkspace(initialMode);
+    })();
     Promise.all([
-      loadWorkspace(initialMode),
+      openInitial,
       getJson("/api/orbitguard/links").then((payload) => {
         const nav = document.getElementById("product-links");
         if (!payload.nanodynamics_url) return;

@@ -16,7 +16,7 @@ def roadmap() -> dict[str, Any]:
         ),
         "implemented": [
             "This repository is the OrbitGuard product. Shared SGP4, frame, element, and numerical-propagator code is imported from NanoDynamics and is not copied here.",
-            "Public CelesTrak GP/OMM JSON for the stations group, one cached batch, FORMAT=JSON. Legacy TLE checksums and strict Alpha-5 decoding are provided by NanoDynamics.",
+            "Public CelesTrak GP/OMM JSON for the stations group, one cached batch, FORMAT=JSON. Timeouts are HTTP 504 and are not retried as a catalog storm. A labelled stations snapshot, refreshed by GitHub Actions no faster than every two hours, can be opened separately when the live download fails. Legacy TLE checksums and strict Alpha-5 decoding are provided by NanoDynamics.",
             "Idempotent ingest: content hash, duplicate detection, conflict when the same catalog id and epoch arrive with a different hash. Credential-like fields are rejected.",
             "Catalog mean elements are propagated by NanoDynamics SGP4 (WGS-72, TEME) and shown with that package's GMST Earth-fixed display transform. UTC stands in for UT1.",
             "Numerical propagation is NanoDynamics' integrator, and only for states labelled osculating Cartesian in its numerical frame. Mean elements are refused.",

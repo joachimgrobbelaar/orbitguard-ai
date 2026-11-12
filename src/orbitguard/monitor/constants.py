@@ -44,6 +44,11 @@ ALLOWED_PUBLIC_GROUP = "stations"
 
 USER_AGENT = "OrbitGuard/0.1 (public read-only GP and SWPC; cached)"
 
+# One CelesTrak read. Hugging Face egress to celestrak.org has been observed
+# to hang, so the client waits long enough to tell a timeout from a fast 403
+# and then stops. This is not a reason to open extra connections.
+CELESTRAK_TIMEOUT_S = 45.0
+
 F107_UNIT = "sfu (10^-22 W m^-2 Hz^-1)"
 KP_UNIT = "1 (dimensionless)"
 TEC_UNIT = "TECU (10^16 electrons m^-2)"

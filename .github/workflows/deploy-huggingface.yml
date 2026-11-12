@@ -3,6 +3,9 @@ name: Publish Hugging Face Space
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # A stations-snapshot commit must not rebuild or upload the Space.
+      - "data/gp/**"
   workflow_dispatch:
 
 permissions:

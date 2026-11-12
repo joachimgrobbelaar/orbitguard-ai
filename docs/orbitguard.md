@@ -12,8 +12,15 @@ derived, and what is not known. It does not command a spacecraft.
    OMM JSON:
    `https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON`.
    The client caches the batch and does not ask again for two hours,
-   which is the update interval CelesTrak documents. HTTP 301, 403, and
-   404 are not retried. Records are validated, hashed, and stored once.
+   which is the update interval CelesTrak documents. The read waits 45
+   seconds. A timeout or other URL error is reported as HTTP 504 with
+   the reason as the body, retried once, and is not turned into an empty
+   catalog. HTTP 301, 403, and 404 are not retried. Records are validated,
+   hashed, and stored once. A separate GitHub Actions job saves one
+   stations-group response at least two hours apart under `data/gp/`.
+   Opening that file is its own action. The page names it as a snapshot,
+   with the job's retrieval time and the CelesTrak URL. A failed live
+   request does not load the file by itself.
    The same hash is a duplicate. The same catalog number and epoch with
    a different hash is a conflict and is not overwritten. Fields that
    look like credentials are rejected. Legacy TLE lines can be checked

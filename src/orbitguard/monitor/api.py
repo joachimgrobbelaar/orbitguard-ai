@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from orbitguard.nd import MeanElementsNotOsculating
 from orbitguard.monitor.service import MonitorService
+from orbitguard.monitor.snapshot import SnapshotUnavailable
 
 def default_cache_dir() -> Path:
     configured = os.environ.get("ORBITGUARD_CACHE_DIR")
@@ -54,7 +55,7 @@ class SimulateBody(BaseModel):
 
 
 class ScreenBody(BaseModel):
-    mode: Literal["simulation_sample", "public_gp", "osculating_simulation"]
+    mode: Literal["simulation_sample", "public_gp", "gp_snapshot", "osculating_simulation"]
     primary_id: Optional[str] = None
     secondary_id: Optional[str] = None
     window_minutes: float = 120.0
@@ -85,7 +86,7 @@ def status() -> dict[str, Any]:
 
 @router.get("/workspace")
 def workspace(
-    mode: Literal["awaiting", "simulation_sample", "public_gp"] = "awaiting",
+    mode: Literal["awaiting", "simulation_sample", "public_gp", "gp_snapshot"] = "awaiting",
     epoch_stale_s: float = 72 * 3600,
     retrieval_stale_s: float = 6 * 3600,
 ) -> dict[str, Any]:
@@ -105,6 +106,17 @@ def workspace(
 @router.post("/catalog/refresh")
 def refresh_catalog() -> dict[str, Any]:
     return get_service().refresh_public(_now())
+
+
+@router.post("/catalog/snapshot")
+def load_snapshot() -> dict[str, Any]:
+    """Load the packaged stations snapshot. This does not call CelesTrak."""
+    try:
+        return get_service().load_snapshot(_now())
+    except SnapshotUnavailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/ingest")

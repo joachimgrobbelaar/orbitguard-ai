@@ -49,8 +49,9 @@ from orbitguard.monitor.risk import assess_covariance, geometric_screen
 from orbitguard.monitor.roadmap import roadmap
 from orbitguard.monitor.samples import SAMPLE_SOURCE, sample_records
 from orbitguard.monitor.sensors import sensor_catalog
+from orbitguard.monitor.snapshot import describe_stations_snapshot, load_stations_snapshot
 
-MODES = ("awaiting", "simulation_sample", "public_gp")
+MODES = ("awaiting", "simulation_sample", "public_gp", "gp_snapshot")
 
 
 class MonitorService:
@@ -130,14 +131,53 @@ class MonitorService:
                 "credentials_exposed": False,
             }
         data = self.store.load()
+        if mode == "gp_snapshot":
+            latest = data.get("latest_snapshot")
+            if not latest or not latest.get("hashes"):
+                return self._empty(
+                    now,
+                    "gp_snapshot",
+                    "The stations snapshot has not been loaded. That is a separate action from a live CelesTrak download.",
+                    settings,
+                )
+            return self._catalog_workspace(
+                data,
+                latest,
+                now=now,
+                settings=settings,
+                mode="gp_snapshot",
+                mode_label=(
+                    "CelesTrak stations snapshot — not a live download by this process. "
+                    f"Retrieved {latest.get('retrieved_at')} by {latest.get('retrieved_by') or 'the snapshot job'}."
+                ),
+            )
         latest = data.get("latest_public")
         if not latest or not latest.get("hashes"):
             return self._empty(
                 now,
                 "awaiting",
-                "Public GP has not been retrieved. Sample mode is a separate, labelled action.",
+                "Public GP has not been retrieved. Sample mode and the stations snapshot are separate, labelled actions.",
                 settings,
             )
+        return self._catalog_workspace(
+            data,
+            latest,
+            now=now,
+            settings=settings,
+            mode="public_gp",
+            mode_label="Public GP — CelesTrak OMM JSON mean elements propagated with SGP4. Not a sensor feed.",
+        )
+
+    def _catalog_workspace(
+        self,
+        data: dict[str, Any],
+        latest: dict[str, Any],
+        *,
+        now: datetime,
+        settings: dict[str, Any],
+        mode: str,
+        mode_label: str,
+    ) -> dict[str, Any]:
         retrieved = _parse(latest["retrieved_at"])
         objects = []
         for content_hash in latest["hashes"]:
@@ -153,19 +193,24 @@ class MonitorService:
                     retrieval_time=retrieved,
                     source_name=stored.get("source_name", "celestrak_gp_json"),
                     source_url=stored.get("source_url", CELESTRAK_STATIONS_URL),
-                    mode="public_gp",
+                    mode=mode,
                     display_time=now,
                     synthetic=False,
-                    epoch_stale_s=epoch_stale_s,
-                    retrieval_stale_s=retrieval_stale_s,
+                    epoch_stale_s=settings["epoch_stale_s"],
+                    retrieval_stale_s=settings["retrieval_stale_s"],
                 )
             )
         return {
-            "mode": "public_gp",
-            "mode_label": "Public GP — CelesTrak OMM JSON mean elements propagated with SGP4. Not a sensor feed.",
+            "mode": mode,
+            "mode_label": mode_label,
             "now": iso(now),
             "retrieved_at": latest.get("retrieved_at"),
+            "loaded_at": latest.get("loaded_at"),
+            "retrieved_by": latest.get("retrieved_by"),
+            "live_download": bool(latest.get("live_download", mode == "public_gp")),
+            "source_name": latest.get("source_name"),
             "source_url": latest.get("source_url", CELESTRAK_STATIONS_URL),
+            "snapshot_note": latest.get("note"),
             "documentation": CELESTRAK_GP_DOC,
             "display_settings": settings,
             "objects": objects,
@@ -180,7 +225,14 @@ class MonitorService:
         report = fetch_public_stations(self.store, **kwargs)
         report["credentials_exposed"] = False
         report["group"] = ALLOWED_PUBLIC_GROUP
+        # Describe the packaged snapshot. Do not ingest it on a live failure.
+        report["snapshot"] = describe_stations_snapshot(now)
+        report["snapshot_loaded"] = False
         return report
+
+    def load_snapshot(self, now: Optional[datetime] = None) -> dict[str, Any]:
+        now = as_utc(now) or datetime.now(timezone.utc)
+        return load_stations_snapshot(self.store, now=now)
 
     def ingest_batch(self, records: list[dict[str, Any]], now: Optional[datetime] = None, *, source_name: str, source_url: Optional[str]) -> dict[str, Any]:
         now = as_utc(now) or datetime.now(timezone.utc)
@@ -452,11 +504,12 @@ class MonitorService:
                 note="Public GP does not include a calibrated covariance. None was invented.",
             )
         )
-        label = (
-            "Simulation sample — not a catalog object"
-            if synthetic
-            else "Public GP object — mean elements, SGP4 state"
-        )
+        if synthetic:
+            label = "Simulation sample — not a catalog object"
+        elif mode == "gp_snapshot":
+            label = "CelesTrak stations snapshot — not a live download by this process"
+        else:
+            label = "Public GP object — mean elements, SGP4 state"
         return {
             "id": public_id,
             "name": record["OBJECT_NAME"],
