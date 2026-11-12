@@ -1,5 +1,5 @@
 ---
-title: OrbitGuard AI - Autonomous Mission Control Copilot
+title: OrbitGuard
 emoji: 🛰️
 colorFrom: blue
 colorTo: indigo
@@ -7,120 +7,136 @@ sdk: docker
 app_port: 7860
 pinned: false
 license: mit
+short_description: Human-reviewed LEO catalog monitoring
 ---
 
-# 🛰️ OrbitGuard AI
-### Autonomous Conjunction Screening & Maneuver Recommendation Copilot
-**Part of the Super Intelligence Solutions (SIS) & NanoDynamics Astrodynamics Ecosystem**
+# OrbitGuard
 
-`OrbitGuard AI` is an autonomous "Mission Control Copilot" micro-SaaS engineered for university CubeSat teams, small satellite constellations, and orbital dynamics researchers. It continuously screens Low-Earth Orbit (LEO) satellites against space debris catalogs, calculates collision probability ($P_c$), synthesizes optimal collision avoidance maneuvers (CAM), generates flight director executive briefings, and dispatches multi-channel alerts.
+OrbitGuard is a human-reviewed LEO monitoring workspace. It retrieves one
+cached CelesTrak GP/OMM JSON batch (the `stations` group), asks NanoDynamics
+to propagate those mean elements with SGP4, and shows NOAA SWPC F10.7 and
+estimated planetary K when those files return. Geometric miss distance is
+the only conjunction figure. Collision probability stays `not_computable`.
+Hall Nc stays `not_implemented`. Nothing in this service commands a
+spacecraft or points a sensor.
 
----
+This repository is the OrbitGuard product. It is not a second copy of the
+NanoDynamics simulator.
 
-## ⚡ Core Engine Features
+## How the two repositories relate
 
-1. **Automated Ephemeris & TLE Ingestion**: Pulls fresh orbital data from CelesTrak and Space-Track, solves Kepler's equation via Newton-Raphson iteration, and tracks epoch updates.
-2. **NanoDynamics Physics Engine Core**: Leverages high-precision numerical orbit propagation with Runge-Kutta 4(5) Cowell formulation integrating:
-   - Central Earth two-body gravity ($\mu = 3.986 \times 10^{14}\text{ m}^3/\text{s}^2$)
-   - Earth oblateness $J_2$ perturbation ($\dot{\Omega}$ regression of nodes and apsidal drift)
-   - Atmospheric drag with exponential thermospheric model and Earth co-rotation velocity.
-3. **72-Hour Conjunction Screening Window**:
-   - Detects close approaches within user-configurable distance thresholds ($d \le 10\text{ km}$).
-   - Employs Brent's scalar minimization algorithm to locate the exact sub-second Time of Closest Approach (TCA).
-   - Resolves encounter geometry in RTN (Radial, In-track, Cross-track) and VNC (Velocity, Normal, Co-Normal) coordinate frames.
-   - Computes 2D B-plane collision probability ($P_c$) using the Akella-Alfriend / Foster formulation.
-4. **Autonomous Maneuver Recommendation Engine**:
-   - Solves for along-track phasing burns ($\Delta V_T$ prograde/retrograde) and cross-track out-of-plane burns ($\Delta V_N$ normal/antinormal).
-   - Computes propellant mass depletion and continuous thrust duration using the Tsiolkovsky rocket equation.
-   - Re-propagates the post-burn state to confirm safety margin expansion ($> 25\text{ km}$ clearance) and verify perigee safety ($> 200\text{ km}$).
-5. **LLM Flight Director Briefings**:
-   - Automatically formats NASA CARA / AIAA compliant executive mission briefings with full telemetry, burn vectors, and operator action items.
-6. **Multi-Channel Alert Dispatcher**:
-   - Real-time Telegram alerts with 1-click CAM authorization.
-   - HMAC-SHA256 signed JSON webhooks for university ground stations.
-
----
-
-## 🏛️ System Architecture
-
-```mermaid
-flowchart TD
-    subgraph Ingestion["1. Ephemeris & Telemetry Ingestion"]
-        CT["CelesTrak / Space-Track API"]
-        LocalCat[("Local High-Fidelity Catalog")]
-        DB_TLE[("Database: tle_records")]
-        CT -->|Scheduled Sync| DB_TLE
-        LocalCat -.->|Offline Fallback| DB_TLE
-    end
-
-    subgraph PhysicsCore["2. Physics-Informed Screening"]
-        Cowell["RK45 Cowell Propagator\n(J2 Oblateness + Drag)"]
-        Optimizer["TCA Localization (Brent's Minimizer)"]
-        PcEngine["2D B-Plane Collision Probability (Pc)"]
-        DB_TLE --> Cowell
-        Cowell --> Optimizer
-        Optimizer --> PcEngine
-    end
-
-    subgraph DecisionCore["3. Autonomous Maneuver Solver"]
-        RiskEval{"Pc > 1e-4 or d < 10 km?"}
-        PhasingSolver["Along-Track Phasing (ΔVT)"]
-        NormalSolver["Cross-Track Out-of-Plane (ΔVN)"]
-        RocketEq["Tsiolkovsky Propulsion Budget"]
-        Verification["Post-Maneuver Clearance Re-check"]
-
-        PcEngine --> RiskEval
-        RiskEval -- Yes --> PhasingSolver & NormalSolver
-        PhasingSolver --> RocketEq
-        NormalSolver --> RocketEq
-        RocketEq --> Verification
-    end
-
-    subgraph Operations["4. Executive Briefing & Multi-Channel Alerting"]
-        BriefAgent["Flight Director Briefing Agent"]
-        TelegramAlert["Telegram Bot Notification"]
-        WebhookDispatch["HMAC-SHA256 Ground Station Webhook"]
-        OperatorUI["Mission Control Dashboard (:7860 / :8045)"]
-
-        Verification --> BriefAgent
-        BriefAgent --> TelegramAlert
-        BriefAgent --> WebhookDispatch
-        BriefAgent --> OperatorUI
-    end
+```
+OrbitGuard  -->  NanoDynamics
 ```
 
----
+OrbitGuard installs NanoDynamics and imports it. NanoDynamics does not
+import OrbitGuard, and it does not ship this UI.
 
-## 💾 Multi-Tenant Database Schema
+| Concern | Where it lives |
+| --- | --- |
+| CelesTrak caching, provenance, NOAA indices, geometric screen, operator page | OrbitGuard (`src/orbitguard/monitor/`) |
+| SGP4 wrapper, GMST display transform, Alpha-5 and TLE checksums, physical constants, numerical propagator | NanoDynamics (`nanodynamics.propagation`, `nanodynamics.frames`, `nanodynamics.elements`, `nanodynamics.constants`) |
 
-The production schema is located at [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql):
-- `tenants`: University labs, CubeSat teams, commercial operators.
-- `satellites`: Monitored assets with propulsion properties ($I_{\text{sp}}$, thrust, propellant mass).
-- `tle_records`: Time-series NORAD element sets.
-- `debris_catalog`: Tracked resident space objects and fragmentation debris.
-- `conjunction_screenings`: Close approaches, TCA timestamps, miss distances, relative velocities, and $P_c$.
-- `maneuver_recommendations`: Optimal burn parameters ($\Delta \mathbf{V}_{\text{VNC}}$, duration, fuel used, post-burn miss distance).
-- `alert_dispatches` & `audit_logs`: Audit logs for multi-channel alerts and flight safety commands.
+Call sites import `nanodynamics` directly. `orbitguard.nd` records the pin
+and re-exports the same symbols. OrbitGuard does not vendor that physics.
 
----
+### Pin
 
-## 🚀 Quick Start & CLI
+NanoDynamics 1.1.0, dependencies numpy, scipy, and sgp4. The same line is
+in `requirements.txt` and `src/orbitguard/nd.py`:
+
+```text
+nanodynamics @ git+https://github.com/joachimgrobbelaar/NanoDynamics@d22c000a304e4484ce58461afde31981647483bf
+```
+
+| Module | Used for |
+| --- | --- |
+| `nanodynamics.elements` | `validate_omm`, `canonical_hash`, Alpha-5, TLE checksums |
+| `nanodynamics.frames` | GMST, TEME display rotation, `ensure_utc` |
+| `nanodynamics.propagation` | SGP4, osculating numerical propagation (rejects GP/TLE/TEME), two-body check |
+| `nanodynamics.constants` | Frame names, WGS-72 label, GMST at J2000 |
+
+`/health` reports package version `1.1.0` and this pin.
+
+## What is implemented
+
+- One public CelesTrak request for `GROUP=stations&FORMAT=JSON`, cached for
+  two hours. HTTP 301, 403, and 404 are not retried. Records are validated,
+  hashed, and stored once.
+- Per-quantity provenance: observation time, retrieval time, both ages,
+  source, unit, frame, and measured / modelled / derived / unavailable.
+- NOAA F10.7 in solar flux units and estimated Kp as a dimensionless index,
+  only when those JSON files are retrieved. TEC and thermospheric density
+  stay empty. Kp and F10.7 are not converted into density or plasma.
+- Sampled geometric miss distance. Pc is not computed. Nc is not implemented.
+  A missing covariance is not shown as zero or safe.
+- A labelled simulation sample (`OG-SAMPLE-LEO-A` / `OG-SAMPLE-LEO-B`),
+  shown at the element epoch, not as a live catalog.
+- Space-Track is optional and server-side only. This build does not log in.
+  If `SPACETRACK_USER` and `SPACETRACK_PASSWORD` are set, the status flag
+  says they are configured and does not return the values.
+- 3D ground-track display of latitudes and longitudes the API returns.
+  The display frame is TEME rotated by GMST. It is not ITRF.
+
+Operator notes, sources, and the list of things this version does not do
+are in [`docs/orbitguard.md`](docs/orbitguard.md).
+
+## What is not implemented
+
+No validated 2D Pc, 3D Nc, or Monte Carlo count. No covariance propagation.
+No NRLMSISE-00 or JB2008. No GNSS TEC, in-situ plasma, ILRS, or debris-laser
+feed. No laser pointing or firing. No maneuver solver and no command path.
+No invented telemetry.
+
+## Run locally
 
 ```bash
-# Clone and enter directory
-cd orbitguard-ai
-
-# Create virtual environment and install dependencies
-uv venv .venv
+python -m venv .venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
-
-# Run Unit & Integration Tests (12 tests)
-PYTHONPATH=src pytest -v
-
-# Run Autonomous Threat Simulation CLI
-PYTHONPATH=src python -m orbitguard.cli simulate
-
-# Launch FastAPI Mission Control Dashboard
-PYTHONPATH=src uvicorn orbitguard.main:app --host 0.0.0.0 --port 7860 --reload
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v
+python -m uvicorn orbitguard.main:app --host 0.0.0.0 --port 7860
 ```
+
+`pip install -r requirements.txt` installs NanoDynamics from the pinned
+git URL. Catalog ingest, SGP4 tracks, and the NOAA request need no
+credentials.
+
+The catalog cache defaults to `/tmp/orbitguard` (`ORBITGUARD_CACHE_DIR`).
+No credentials are required.
+
+## Docker
+
+```bash
+docker build -t orbitguard .
+docker run --rm -p 7860:7860 orbitguard
+```
+
+The image follows the Hugging Face Docker Space rules: non-root user
+`uid 1000`, cache under `/tmp/orbitguard`, process listening on
+`0.0.0.0:7860`. The same `requirements.txt` pin is installed in the image.
+No secrets are baked in.
+
+## Hugging Face Space
+
+The README front matter above is the Space config (`sdk: docker`,
+`app_port: 7860`). `.github/workflows/deploy-huggingface.yml` pushes `main`
+to the Space with the `HF_TOKEN` repository secret. The Space id is the
+single non-comment line in [`deploy/hf_space_id`](deploy/hf_space_id):
+`Marnu25/orbitguard-ai`. A NanoDynamics workflow used to force-push that
+Space; it no longer does. This workflow is the publisher.
+
+The upload script is `scripts/publish_space.py`. It does not print the token.
+
+`NANODYNAMICS_URL` defaults to `https://marnu25-nanodynamics.hf.space`.
+Set that environment variable to point the header link somewhere else.
+The same default is the non-comment line in
+[`deploy/nanodynamics_space_url`](deploy/nanodynamics_space_url).
+`GET /api/orbitguard/links` returns the address the page uses. The HTML
+does not hardcode it.
+
+This Space is the existing private Docker Space `Marnu25/orbitguard-ai`.
+The image build does not read `HF_TOKEN` or any other secret. Pushing
+`main` runs `.github/workflows/deploy-huggingface.yml`, which uploads
+this repository root with the `HF_TOKEN` secret. No token was available
+in this workspace; deploy the commit named in the pull request.
