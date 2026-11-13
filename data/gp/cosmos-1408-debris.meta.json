@@ -2,7 +2,7 @@
   "group": "cosmos-1408-debris",
   "source_name": "celestrak_cosmos_1408_debris_snapshot",
   "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=cosmos-1408-debris&FORMAT=JSON",
-  "retrieved_at": "2026-11-12T21:14:01.951826Z",
+  "retrieved_at": "2026-11-13T02:12:25.896691Z",
   "retrieved_by": "github-actions",
   "object_count": 2,
   "live_download": false,
