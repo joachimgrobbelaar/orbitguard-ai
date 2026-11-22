@@ -2,9 +2,9 @@
   "group": "active",
   "source_name": "celestrak_active_snapshot",
   "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON",
-  "retrieved_at": "2026-11-21T20:16:19.548002Z",
+  "retrieved_at": "2026-11-22T01:43:12.817503Z",
   "retrieved_by": "github-actions",
-  "object_count": 16915,
+  "object_count": 16912,
   "live_download": false,
   "note": "Snapshot of one CelesTrak active-group download. OrbitGuard did not contact CelesTrak when it displays this file. The retrieval time is when this job saved the response."
 }
