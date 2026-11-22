@@ -2,7 +2,7 @@
   "group": "stations",
   "source_name": "celestrak_stations_snapshot",
   "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON",
-  "retrieved_at": "2026-11-22T01:43:12.817503Z",
+  "retrieved_at": "2026-11-22T08:56:17.715272Z",
   "retrieved_by": "github-actions",
   "object_count": 17,
   "live_download": false,
