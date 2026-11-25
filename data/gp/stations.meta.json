@@ -2,9 +2,9 @@
   "group": "stations",
   "source_name": "celestrak_stations_snapshot",
   "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=JSON",
-  "retrieved_at": "2026-11-25T00:11:21.459106Z",
+  "retrieved_at": "2026-11-25T10:35:41.867955Z",
   "retrieved_by": "github-actions",
-  "object_count": 16,
+  "object_count": 17,
   "live_download": false,
   "note": "Snapshot of one CelesTrak stations-group download. OrbitGuard did not contact CelesTrak when it displays this file. The retrieval time is when this job saved the response."
 }
