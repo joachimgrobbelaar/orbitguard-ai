@@ -2,7 +2,7 @@
   "group": "iridium-33-debris",
   "source_name": "celestrak_iridium_33_debris_snapshot",
   "source_url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-33-debris&FORMAT=JSON",
-  "retrieved_at": "2026-11-27T15:41:55.305873Z",
+  "retrieved_at": "2026-11-28T05:09:55.980581Z",
   "retrieved_by": "github-actions",
   "object_count": 110,
   "live_download": false,
